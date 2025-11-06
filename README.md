@@ -1,12 +1,12 @@
 # Smart Attendance System
-AI-powered attendance system using face recognition.
 
-## Tech Stack
-- Python, FastAPI
-- SQLite/PostgreSQL
-- OpenCV, DeepFace
+This is a FastAPI-based smart attendance system that uses facial recognition for student attendance tracking.
 
-## Quick Start
-1. Clone repo
-2. Install dependencies: pip install -r requirements.txt
-3. Run server: uvicorn app.main:app --reload
+## Setup
+1. Clone the repo
+2. Create virtual environment
+3. Install dependencies: `pip install fastapi uvicorn`
+4. Run server: `uvicorn main:app --reload`
+
+## Status
+✅ Week 1 - Project setup complete
