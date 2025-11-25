@@ -4,7 +4,10 @@ from app.models import Base, Student, AttendanceRecord
 from datetime import date, datetime
 import os
 from dotenv import load_dotenv
-from urllib.parse import quote_plus, parse_qs, urlencode # Added imports for robust option handling
+from urllib.parse import quote_plus, parse_qs, urlencode
+# In every file where you want to log:
+from app.utils.logger import logger 
+# Use: logger.info("Log message")
 
 # --- CONFIGURATION ---
 
@@ -38,6 +41,8 @@ DB_OPTIONS_RAW = get_cleaned_env_var("DB_OPTIONS") or "" # Renamed to DB_OPTIONS
 
 # CRUCIAL: Check if all necessary variables were loaded successfully
 if not all([DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME]):
+    # Use logger instead of print
+    logger.error("Database connection environment variables are missing.")
     raise EnvironmentError(
         "One or more required database environment variables (DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME) "
         "not found. Please check your .env file."
@@ -50,7 +55,6 @@ SUPABASE_POOLER_PORT = "6543"
 ENCODED_DB_PASSWORD = quote_plus(DB_PASSWORD)
 
 # --- SASL FIX: Ensure client_encoding=utf8 is present in options ---
-# This often fixes the 'duplicate SASL authentication request' error with poolers.
 
 # 1. Strip the leading '?' if present from DB_OPTIONS_RAW
 options_string = DB_OPTIONS_RAW.lstrip('?')
@@ -69,7 +73,6 @@ DB_OPTIONS_ENCODED = f"?{urlencode(options_dict, doseq=True)}" if options_dict e
 
 
 # Construct the SQLAlchemy Database URL
-# NOTE: The DB_HOST must now be the Supavisor pooler hostname (e.g., aws-0-us-east-1.pooler.supabase.com)
 SQLALCHEMY_DATABASE_URL = (
     f"postgresql://{DB_USER}:{ENCODED_DB_PASSWORD}@{DB_HOST}:{SUPABASE_POOLER_PORT}/{DB_NAME}{DB_OPTIONS_ENCODED}"
 )
@@ -84,7 +87,11 @@ print("--------------------------------")
 
 # Now create the engine
 engine = create_engine(
-    SQLALCHEMY_DATABASE_URL
+    SQLALCHEMY_DATABASE_URL,
+    # --- FIX FOR SUPABASE POOLER TIMEOUTS ---
+    pool_pre_ping=True, # Check if a connection is alive before using it
+    pool_recycle=299  # Optional: Force recycling connections before the Supavisor 300s timeout
+    # ----------------------------------------
 )
 
 # Initialize SessionLocal
@@ -120,8 +127,22 @@ def add_attendance_record(student_id: str, confidence: float, detection_method: 
         return record
     except Exception as e:
         db.rollback()
-        print(f"Error adding attendance record: {e}")
+        # Use logger for error reporting
+        logger.error(f"Error adding attendance record for student {student_id}: {e}")
         return None
+    finally:
+        db.close()
+
+def get_all_attendance_records():
+    """Get all attendance records from the database."""
+    db = SessionLocal()
+    try:
+        # Retrieve all records from the AttendanceRecord table, ordered by timestamp
+        records = db.query(AttendanceRecord).order_by(AttendanceRecord.timestamp.desc()).all()
+        return records
+    except Exception as e:
+        logger.error(f"Error fetching all attendance records: {e}")
+        return [] # Return an empty list on failure
     finally:
         db.close()
 
@@ -138,7 +159,6 @@ def get_student_attendance(student_id: str, limit: int = 10):
 
 def get_today_attendance():
     """Get today's attendance records."""
-    # The 'datetime' import is now correctly at the top of the file.
     db = SessionLocal()
     try:
         today = date.today()
@@ -188,6 +208,8 @@ def register_student(student_id: str, name: str = None, email: str = None):
         # Check if student already exists
         existing = db.query(Student).filter(Student.id == student_id).first()
         if existing:
+            # Use logger for informative messages
+            logger.info(f"Student ID {student_id} already registered.")
             return existing
 
         # Create new student record
@@ -198,7 +220,7 @@ def register_student(student_id: str, name: str = None, email: str = None):
         return student
     except Exception as e:
         db.rollback()
-        print(f"Error registering student: {e}")
+        logger.error(f"Error registering student {student_id}: {e}")
         return None
     finally:
         db.close()

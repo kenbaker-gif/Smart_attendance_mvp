@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  # --- 1. FastAPI Backend Service ---
+  api:
+    # Build using the Dockerfile in the current directory
+    build: .
+    # Define the command to start the API
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # Map the container port 8000 to the host port 8000
+    ports:
+      - "8000:8000"
+    # Ensure this service starts before the Streamlit app
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    # Use the volumes to enable hot-reloading (optional but helpful for dev)
+    volumes:
+      - .:/app
+    environment:
+      # Use .env or pass environment variables directly if needed
+      - DATABASE_URL=... # Replace with actual connection string if not using .env
+    
+  # --- 2. Streamlit Frontend Service ---
+  dashboard:
+    build: .
+    # Wait for the API to be healthy before starting the dashboard
+    depends_on:
+      api:
+        condition: service_healthy
+    # Command to run the Streamlit app
+    # This assumes your app file is located at /app/streamlit/app.py
+    command: streamlit run streamlit/app.py
+    # Streamlit defaults to port 8501
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app
+    # Set the working directory to the app root
+    working_dir: /app

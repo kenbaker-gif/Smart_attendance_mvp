@@ -5,3 +5,8 @@ psycopg2-binary
 sqlalchemy
 face-recognition
 pillow
+cmake
+build-essential
+libsm6
+libxext6
+libxrender-dev
