@@ -10,8 +10,9 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Install precompiled dlib wheel from stable GitHub mirror
+# Option 1: Use the official dlib.net link (Recommended)
 RUN pip install --no-cache-dir \
-    https://github.com/cmusatyalab/openface/releases/download/v0.5.5/dlib-19.24.0-cp310-cp310-manylinux_2_17_x86_64.whl
+    https://dlib.net/files/dlib-19.24.2-cp310-cp310-manylinux_2_28_x86_64.whl
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
