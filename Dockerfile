@@ -54,4 +54,4 @@ EXPOSE $PORT
 
 # --- CRITICAL CHANGE: Use the Streamlit command ---
 # CMD to run your Streamlit application script
-CMD ["sh", "-c", "streamlit run app.py --server.address=0.0.0.0 --server.port=$PORT"]
+CMD ["sh", "-c", "streamlit run streamlit/app.py --server.address=0.0.0.0 --server.port=$PORT"]
