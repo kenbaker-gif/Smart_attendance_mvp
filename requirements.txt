@@ -1,10 +1,6 @@
-fastapi
-uvicorn
-python-multipart
-psycopg2-binary
-sqlalchemy
+streamlit
+supabase
 face-recognition
-pillow
-opencv-python-headless
 numpy
+Pillow
 python-dotenv
