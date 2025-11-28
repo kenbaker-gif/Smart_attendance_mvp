@@ -1,6 +1,6 @@
 streamlit
 supabase
-face-recognition
+deepface
 numpy
 Pillow
 python-dotenv
