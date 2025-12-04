@@ -1,6 +1,10 @@
 streamlit
+fastapi
+uvicorn[standard]
 supabase
-deepface
-numpy
+insightface[onnx]
+opencv-python
 Pillow
+numpy
 python-dotenv
+requests
