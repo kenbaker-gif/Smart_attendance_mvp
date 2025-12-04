@@ -1,10 +1,5 @@
-streamlit
 fastapi
 uvicorn[standard]
-supabase
 python-dotenv
+supabase
 python-multipart
-Pillow
-numpy
-opencv-python
-insightface
