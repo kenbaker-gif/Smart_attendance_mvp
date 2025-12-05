@@ -1,8 +1,9 @@
+# main.py
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from app.routes import attendance
-import os
 from fastapi.responses import FileResponse
+from app.routes.attendance import router as attendance_router
+import os
 
 app = FastAPI(title="Smart Attendance System")
 
@@ -19,5 +20,5 @@ def home():
 def health():
     return {"status": "ok"}
 
-# Include router
-app.include_router(attendance.router, prefix="/attendance", tags=["Attendance"])
+# Include attendance router (Supabase upload)
+app.include_router(attendance_router, prefix="/attendance", tags=["Attendance"])

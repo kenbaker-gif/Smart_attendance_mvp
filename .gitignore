@@ -4,3 +4,8 @@ data/raw_faces/
 *.png
 *.jpeg
 debug
+debug2
+streamlit/
+*.test.py
+__pycache__/
+*.pyc

@@ -3,9 +3,8 @@
 from fastapi import APIRouter, UploadFile, File
 from fastapi.responses import RedirectResponse
 import os
-from shutil import copyfileobj
+from supabase import create_client
 
-from app.utils.face_utils import preprocess_faces
 from app.database import (
     SessionLocal,
     add_attendance_record,
@@ -14,41 +13,38 @@ from app.database import (
     get_attendance_summary,
     register_student
 )
-from app.models import Student, AttendanceRecord  # ✅ Corrected import path
+from app.models import Student, AttendanceRecord
 
 router = APIRouter()
 
+# Initialize Supabase client
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET")
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 @router.post("/capture/{student_id}")
-async def capture_and_preprocess(
-    student_id: str,
-    file: UploadFile = File(...),
-    preprocess: bool = True
-):
+async def capture_and_upload(student_id: str, file: UploadFile = File(...)):
     """
-    Save uploaded image for a student and optionally preprocess it immediately.
+    Upload student image directly to Supabase bucket.
     After completion, redirect to the homepage.
     """
-    # Step 1: Save raw image
-    raw_dir = os.path.join("data", "raw_faces", student_id)
-    os.makedirs(raw_dir, exist_ok=True)
-
-    existing_files = os.listdir(raw_dir)
-    new_index = len(existing_files) + 1
-    file_ext = os.path.splitext(file.filename)[1]
-    raw_path = os.path.join(raw_dir, f"{new_index}{file_ext}")
+    file_name = f"{student_id}_{file.filename}"
 
     try:
-        with open(raw_path, "wb") as buffer:
-            copyfileobj(file.file, buffer)
-    except Exception as e:
-        return {"error": f"Failed to save image: {e}"}
-
-    # Step 2: Preprocess immediately if requested
-    if preprocess:
+        file_bytes = await file.read()
+        # Delete if exists (optional)
         try:
-            preprocess_faces()  # This will process all images in raw_faces
-        except Exception as e:
-            return {"error": f"Preprocessing failed: {e}"}
+            supabase.storage.from_(SUPABASE_BUCKET).remove([f"{student_id}/{file_name}"])
+        except Exception:
+            pass  # Ignore if file does not exist
 
-    # Step 3: Redirect back to homepage
+        # Upload file
+        supabase.storage.from_(SUPABASE_BUCKET).upload(
+            f"{student_id}/{file_name}", file_bytes, {"cacheControl": "3600"}
+        )
+
+    except Exception as e:
+        return {"error": f"Failed to upload image to Supabase: {e}"}
+
     return RedirectResponse(url="/", status_code=303)
