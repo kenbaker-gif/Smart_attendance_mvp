@@ -1,49 +1,39 @@
-# --- STAGE 1: BUILDER (For Conda ML Dependencies) ---
-FROM continuumio/miniconda3:latest AS builder
+# --- STAGE 1: BUILDER (Heavy Install & Cleaning) ---
+# We use this stage to perform all installations and clean up the cache.
+FROM continuumio/miniconda3:latest AS final
 
-# Install minimal system dependencies
-RUN apt-get update && apt-get install -y \
-    libgl1 \
-    libopenblas-dev \
-    liblapack-dev \
-    # The 'git' and 'cmake' packages are often needed to build dlib from scratch,
-    # though conda handles the actual installation here.
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-# Copy requirements (assuming it includes streamlit, numpy, face-recognition, etc.)
-COPY requirements.txt .
-
-# Install heavy dependencies (dlib, opencv) using conda
-# Use 'conda install' before 'pip install' to resolve conflicts better
-RUN conda install -c conda-forge dlib=19.24 opencv -y --no-update-deps --quiet
-
-# Install remaining Python packages (must include 'streamlit' and 'supabase')
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Clean conda cache to reduce size
-RUN conda clean -afy
-
-# --- STAGE 2: FINAL (Minimal Runtime) ---
-# Use a slim base image
-FROM python:3.10-slim
-
-# Minimal runtime dependencies for the ML packages
+# Install minimal system dependencies needed for runtime
+# We must do this *after* the FROM command for the base image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libopenblas0 \
     liblapack3 \
+    git \
+    cmake \
+    # Clean up the apt lists immediately after install
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy prebuilt conda environment from the builder stage
-COPY --from=builder /opt/conda /opt/conda
+# Copy requirements
+COPY requirements.txt .
 
-ENV PATH="/opt/conda/bin:$PATH"
+# 1. Install heavy dependencies (dlib, opencv) using conda
+RUN conda install -c conda-forge dlib=19.24 opencv -y --no-update-deps --quiet
+
+# 2. Install remaining Python packages (must include 'streamlit' and 'supabase')
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 3. Clean conda cache to reduce image size (CRITICAL STEP)
+# This significantly shrinks the final image before saving it.
+RUN conda clean -afy
+
+# --- STAGE 2: APPLICATION RUNTIME (NO SEPARATE STAGE NEEDED) ---
+# Since Stage 1 is the most efficient final image, we rename it 'final'
+# and continue. The environment is already configured.
 
 # Copy the application code (app.py, recognition files, etc.)
+# Do this last so code changes don't invalidate the slow dependency layer cache.
 COPY . .
 
 # Set the default port for Streamlit
@@ -52,6 +42,8 @@ ENV PORT=8501
 # Expose Streamlit's default port
 EXPOSE $PORT
 
-# --- CRITICAL CHANGE: Use the Streamlit command ---
+# Set the PATH environment variable (already configured in the base image, but good practice)
+ENV PATH="/opt/conda/bin:$PATH"
+
 # CMD to run your Streamlit application script
 CMD ["sh", "-c", "streamlit run streamlit/app.py --server.address=0.0.0.0 --server.port=$PORT"]
