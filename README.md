@@ -1,94 +1,167 @@
-# 📸 Smart Attendance System
+# 📸 Smart Attendance System (AI-Powered Face Recognition)
 
-A FastAPI-based smart attendance system that uses facial recognition for student attendance tracking.
+An end-to-end AI Attendance System built with FastAPI, Streamlit, InsightFace, Supabase, and deployed on Railway.
+This system performs real-time face recognition using stored student images, automatically marks attendance, and provides a simple user interface for teachers and admins.
 
----
+## 🚀 Features
+## 🧠 AI Face Recognition (InsightFace)
 
-## 🚀 Quick Start
+- Uses InsightFace ArcFace embeddings, one of the most accurate face recognition models available.
 
-### Prerequisites
-- Python 3.8+
-- Git
+- High-precision embedding generation and matching using cosine similarity.
 
-### Installation Steps
-1. Clone the repository
-2. Create a virtual environment: `python -m venv venv`
-3. Activate the virtual environment: `source venv/bin/activate`
-4. Install dependencies: `pip install fastapi uvicorn python-multipart`
-5. Run the server: `uvicorn main:app --reload`
+- Embeddings are generated on demand (not stored in DB).
 
-The application will be available at `http://localhost:8000`
+## ☁️ Cloud Storage (Supabase)
 
----
+- Stores all student information and face images.
 
-## 📋 Project Progress
+- Backend fetches images from Supabase when needed.
 
-| Week | Status | Milestone |
-|------|--------|-----------|
-| Week 1 | ✅ Complete | Project setup |
-| Week 2 | ✅ Complete | Camera & Image Upload Functionality |
+- Streamlined integration for reading/writing attendance records.
 
----
+## ⚡ High-Performance Backend (FastAPI)
 
-## 📌 Week 2 Milestone: Camera and Image Upload
+- Fast, scalable API for:
 
-### Overview
-Enabled image capture via webcam and image upload functionality for student attendance tracking. Core backend and frontend interactions were implemented and thoroughly tested.
+- image uploads
 
-### ✨ Key Achievements
+- embedding generation
 
-#### 🎥 Webcam Capture
-- Users can capture student images directly from their device camera
-- Support for front and back camera switching
-- Real-time preview of captured images before submission
+- face matching
 
-#### 📁 File Upload
-- Manual image upload capability
-- Student ID required for image association
-- Dynamic backend routing based on student ID
+- attendance marking
 
-#### 🔄 Workflow Features
-- Automatic page reset after successful submission
-- Seamless frontend/backend integration
-- Support for both webcam and upload inputs simultaneously
+- student management
 
----
+## 🌐 Modern Frontend (Streamlit)
 
-## 📂 Project Structure
+Clean UI for:
 
-```
-smart_attendance_system/
-├── main.py                 # FastAPI server & routes
-├── static/
-│   ├── index.html         # Frontend UI
-│   └── js/
-│       └── main.js        # Camera & form handling
-└── README.md
+- capturing live webcam images
+
+- displaying recognition results
+
+- viewing attendance logs
+
+- managing students
+
+## 📦 Deployment
+- Backend (FastAPI)
+
+- Deployed on Railway using:
+
+```python
+uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ```
 
----
+## Frontend (Streamlit)
+1. Deployable via:
+   - Streamlit Cloud
+   - Railway
+   - Docker image
 
-## 🔄 User Workflow
+## 🏗️ System Architecture
+```python
 
-1. Open the system in your browser (`http://localhost:8000`)
-2. Capture image using webcam **OR** upload an existing file
-3. Enter the Student ID
-4. Click Submit → Backend processes the file
-5. Page automatically resets for the next input
+             ┌────────────────────────┐
+             │        Streamlit       │
+             │  (User Interface/App)  │
+             └───────────┬────────────┘
+                         │
+                         ▼
+          ┌────────────────────────────┐
+          │          FASTAPI           │
+          │     (Backend on Railway)   │
+          └───────────┬────────────────┘
+                      │
+     ┌────────────────┼──────────────────┐
+     │                │                  │
+     ▼                ▼                  ▼
+┌───────────┐   ┌────────────┐   ┌─────────────────┐
+│ InsightFace│   │ Attendance │   │ Supabase Storage │
+│ Embeddings │   │   Logging  │   │  (Images + Data) │
+└───────────┘   └────────────┘   └─────────────────┘
+```
 
----
+## ⚙️ How It Works
+   1. Students upload images to Supabase
+      Images stored in a bucket
+      Student metadata saved in Supabase DB
 
-## 📡 API Endpoints
+   2. Backend fetches images
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/attendance/capture/{student_id}` | Submit student image for attendance |
-| `GET` | `/` | Serve main frontend page |
+      When attendance is triggered, the backend:
+      fetches all student images
+      generates embeddings dynamically
+      caches them in memory during container runtime
 
----
+   3. Live camera captures a frame
+      Streamlit sends the image to FastAPI.
 
-## 👤 Author
-**Ainebyona Abubaker**
+   4. InsightFace generates embeddings
+      Both embeddings (student image + live image) are compared using cosine similarity.
+
+   5. Attendance marked on match
+      If similarity passes threshold, attendance is marked and saved in Supabase.
+
+## 🔍 Matching Logic
+- Embedding Generation
+- InsightFace model → embedding vector (512-D)
+- Similarity
+
+### Cosine Similarity
+
+The system uses **cosine similarity** to compare face embeddings generated by InsightFace:
+
+```python
+similarity = np.dot(vec1, vec2)
+```
+
+## 🧪 Testing
+
+- You can test recognition by:
+
+- Uploading student images to Supabase
+
+- Running Streamlit
+
+- Taking a live picture
+
+- Watching the backend detect and mark attendance
+
+## 🧑‍💻 Tech Stack
+
+| Area                | Technology                          |
+|:-------------------:|:-----------------------------------|
+| Backend             | FastAPI, Python                     |
+| AI/Face Recognition | InsightFace (ArcFace), ONNX Runtime |
+| Database            | Supabase (PostgreSQL + Storage)     |
+| Frontend            | Streamlit                           |
+| Deployment          | Railway                             |
+| Auth & Management   | Supabase                            |
+| Image Processing    | OpenCV, PIL                         |
 
 
-**Last Updated:** November 13, 2025
+## 🌍 Use Cases
+
+- School attendance
+
+- Employee check-in systems
+
+- Exam hall verification
+
+- Hostel / dormitory entry
+
+- Visitor verification systems
+
+## 📞 Contact / Hire Me
+
+If you need a **custom AI attendance system** or **commercial deployment**, feel free to reach out:
+
+**Ainebyona Abubaker**  
+Freelancer | AI/ML Developer  
+
+- Fiverr: https://www.fiverr.com/s/Ege84AD
+- Upwork: https://freelancerprofilenuxt.mesh.prod.platform.usw2.upwork/freelancers/~01b78d8a0108200801?mp_source=share  
+- Email: ainebyonabubaker@proton.me
