@@ -164,3 +164,6 @@ Freelancer | AI/ML Developer
 
 - Fiverr: https://www.fiverr.com/s/Ege84AD
 - Email: ainebyonabubaker@proton.me
+
+## 📄 License
+This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
