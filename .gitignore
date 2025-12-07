@@ -7,7 +7,9 @@ debug
 debug2
 streamlit/
 *.test.py
-__pycache__/
-*.pyc
-logs
 .env
+logs
+**/__pycache__/
+**/*.pyc
+.DS_Store
+Thumbs.db
