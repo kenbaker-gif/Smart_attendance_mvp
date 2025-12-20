@@ -5,7 +5,7 @@ on:
   push:
     branches:
       - main
-      - Insightface  # allow running the workflow from the feature branch for manual triggering
+      - Insightface
 
 jobs:
   generate-encodings:
@@ -28,14 +28,11 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          # ONNX Runtime is required by InsightFace; install CPU wheel explicitly
-          pip install onnxruntime
-          # Use headless OpenCV for CI to avoid GUI deps
-          pip install opencv-python-headless
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # Ensure critical dependencies are present for CI
+          pip install onnxruntime opencv-python-headless supabase insightface
 
       - name: Run pregenerate encodings
-        # Optional env vars: set SUPABASE_URL / SUPABASE_KEY / SUPABASE_BUCKET in repo secrets if you want the run to download images
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -44,22 +41,38 @@ jobs:
         run: |
           python scripts/pregenerate_encodings.py
 
+      - name: 🔍 Diagnostic - List Downloaded Files
+        if: always()
+        run: |
+          echo "=== Directory Structure Check ==="
+          echo "Current Path: $(pwd)"
+          if [ -d "streamlit/data" ]; then
+            ls -R streamlit/data/
+          else
+            echo "❌ Directory streamlit/data does not exist!"
+          fi
+
       - name: Upload encodings artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: encodings
           path: streamlit/data/encodings_insightface.pkl
 
       - name: Upload encodings to Supabase (optional)
+        if: success()
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
           ENCODINGS_REMOTE_PATH: ${{ secrets.ENCODINGS_REMOTE_PATH }}
         run: |
-          # Skip upload if required Supabase secrets are not configured
           if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ] || [ -z "$SUPABASE_BUCKET" ]; then
             echo "Supabase secrets not set; skipping upload step."
             exit 0
           fi
-          python scripts/upload_encodings_to_supabase.py
+          if [ -f "scripts/upload_encodings_to_supabase.py" ]; then
+            python scripts/upload_encodings_to_supabase.py
+          else
+            echo "Upload script not found, skipping."
+          fi
