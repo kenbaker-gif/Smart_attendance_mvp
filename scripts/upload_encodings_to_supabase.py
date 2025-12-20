@@ -30,14 +30,20 @@ try:
     client.storage.from_(SUPABASE_BUCKET).remove([remote_path])
     print(f"Removed existing object {remote_path} (if present)")
 except Exception:
-    # ignore
     pass
 
 # Upload
 try:
     with open(ENCODINGS_PATH, "rb") as fh:
         data = fh.read()
-    client.storage.from_(SUPABASE_BUCKET).upload(remote_path, data, {"cacheControl": "3600"})
+    
+    # Use "no-cache" so your Streamlit app sees the update immediately
+    client.storage.from_(SUPABASE_BUCKET).upload(
+        path=remote_path, 
+        file=data, 
+        file_options={"cacheControl": "0", "contentType": "application/octet-stream"}
+    )
+    
     print(f"✅ Uploaded {ENCODINGS_PATH} to {SUPABASE_BUCKET}/{remote_path}")
     sys.exit(0)
 except Exception as e:

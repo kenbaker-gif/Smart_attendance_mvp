@@ -4,6 +4,7 @@ from typing import List, Union
 from supabase import create_client
 
 def _normalize_list_response(resp) -> List[dict]:
+    """Ensures we get a list of file/folder objects regardless of SDK version."""
     if resp is None:
         return []
     if isinstance(resp, dict):
@@ -17,6 +18,7 @@ def _normalize_list_response(resp) -> List[dict]:
     return []
 
 def _download_bytes_from_response(res) -> Union[bytes, None]:
+    """Extracts raw bytes from the Supabase download response."""
     if res is None:
         return None
     if isinstance(res, (bytes, bytearray)):
@@ -30,16 +32,12 @@ def _download_bytes_from_response(res) -> Union[bytes, None]:
                 return bytes(val)
             if isinstance(val, str):
                 return val.encode()
-        return None
     try:
         if hasattr(res, "read"):
             return res.read()
     except Exception:
         pass
-    try:
-        return bytes(res)
-    except Exception:
-        return None
+    return None
 
 def download_all_supabase_images(
     supabase_url: str,
@@ -48,33 +46,21 @@ def download_all_supabase_images(
     local_images_dir: str,
     clear_local: bool = True,
 ) -> bool:
-
+    """
+    Recursive downloader: 
+    1. Lists root to find Student ID folders.
+    2. Lists inside each folder to find images (e.g., 1.jpg).
+    """
     local_path = Path(local_images_dir)
-
-    # If local images already exist and the caller does not want to clear them,
-    # skip the Supabase download to avoid unnecessary network calls and avoid
-    # overwriting local images.
-    def _local_has_images(p: Path) -> bool:
-        try:
-            for f in p.rglob("*"):
-                if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png"):
-                    return True
-        except Exception:
-            return False
-        return False
-
-    if local_path.exists() and not clear_local and _local_has_images(local_path):
-        print(f"⚠ Skipping Supabase download: local images already exist in {local_path}")
-        return True
 
     try:
         supabase = create_client(supabase_url, supabase_key)
+        storage_api = supabase.storage.from_(supabase_bucket)
     except Exception as e:
         print(f"❌ Failed to initialize Supabase client: {e}")
         return False
 
-    storage_api = supabase.storage.from_(supabase_bucket)
-
+    # Prepare local directory
     try:
         if clear_local and local_path.exists():
             shutil.rmtree(local_path)
@@ -83,96 +69,62 @@ def download_all_supabase_images(
         print(f"❌ Failed to prepare local directory: {e}")
         return False
 
-    try:
-        all_files_raw = storage_api.list("", options={"limit": 1000, "deep": True})
-        all_files = _normalize_list_response(all_files_raw)
-    except Exception as e:
-        print(f"❌ Failed to list Supabase bucket: {e}")
-        return False
-
-    # Debug: report how many objects we found
-    try:
-        print(f"🔍 Supabase list returned {len(all_files)} objects (showing up to 5): {all_files[:5]}")
-    except Exception:
-        pass
-
     download_count = 0
 
-    for file_entry in all_files:
-        remote_path = file_entry.get("id") or file_entry.get("name")
-        if not remote_path or str(remote_path).endswith("/"):
-            continue
+    try:
+        # Step 1: List the root of the bucket to find Student ID folders
+        print(f"📂 Scanning bucket: {supabase_bucket} for student folders...")
+        root_items = _normalize_list_response(storage_api.list("", options={"limit": 1000}))
+        
+        if not root_items:
+            print("⚠ No folders or files found in the bucket root.")
+            return False
 
-        filename = Path(str(remote_path)).name
-        if Path(filename).suffix.lower() not in (".jpg", ".jpeg", ".png"):
-            continue
+        for item in root_items:
+            folder_name = item.get("name")
+            
+            # Skip hidden files or system placeholders
+            if not folder_name or folder_name.startswith(".") or folder_name == ".emptyFolderPlaceholder":
+                continue
+            
+            # Step 2: List contents INSIDE the student folder (e.g., 2400102415/)
+            # This is necessary because 'deep=True' is often unreliable in the SDK
+            print(f"🔍 Checking folder: {folder_name}")
+            sub_items_raw = storage_api.list(folder_name, options={"limit": 100})
+            sub_items = _normalize_list_response(sub_items_raw)
+            
+            for file_entry in sub_items:
+                file_name = file_entry.get("name")
+                
+                # Check if it's an image file
+                if file_name and Path(file_name).suffix.lower() in (".jpg", ".jpeg", ".png"):
+                    
+                    # Create the student-specific local directory
+                    student_id = folder_name
+                    remote_path = f"{student_id}/{file_name}"
+                    
+                    local_student_dir = local_path / student_id
+                    local_student_dir.mkdir(parents=True, exist_ok=True)
+                    local_file_path = local_student_dir / file_name
 
-        # Extract a 10-digit student id from the full remote path if possible
-        student_id = None
-        try:
-            import re
-            m = re.search(r"(\d{10})", str(remote_path))
-            if m:
-                student_id = m.group(1)
-        except Exception:
-            student_id = None
+                    # Step 3: Download the image
+                    try:
+                        raw_data = storage_api.download(remote_path)
+                        file_data = _download_bytes_from_response(raw_data)
+                        
+                        if file_data:
+                            with open(local_file_path, "wb") as f:
+                                f.write(file_data)
+                            download_count += 1
+                            print(f"   ✅ Saved: {local_file_path.relative_to(local_path.parent)}")
+                        else:
+                            print(f"   ⚠ Empty data for {remote_path}")
+                    except Exception as e:
+                        print(f"   ❌ Error downloading {remote_path}: {e}")
 
-        if not student_id:
-            # Fallback: try filename prefix
-            try:
-                candidate = filename[:10]
-                if len(candidate) == 10 and candidate.isdigit():
-                    student_id = candidate
-            except Exception:
-                pass
+    except Exception as e:
+        print(f"❌ Critical error during traversal: {e}")
+        return False
 
-        if not student_id:
-            # Could not infer student id from path/filename -> skip but log for debugging
-            print(f"⚠ Skipping {remote_path}: could not infer 10-digit student id from path or filename")
-            continue
-
-        local_file_path = local_path / student_id / filename
-        local_file_path.parent.mkdir(parents=True, exist_ok=True)
-
-        try:
-            raw_data = storage_api.download(remote_path)
-            file_data = _download_bytes_from_response(raw_data)
-            if file_data:
-                with open(local_file_path, "wb") as f:
-                    f.write(file_data)
-                download_count += 1
-            else:
-                print(f"⚠ No data returned for {remote_path}")
-        except Exception as e:
-            print(f"❌ Error downloading {remote_path}: {e}")
-
-    print(f"✅ Downloaded {download_count} files to {local_images_dir}")
-    if download_count == 0 and len(all_files) == 0:
-        print("⚠ No objects were found in the Supabase bucket. Confirm the bucket name and that it contains image files.")
-    elif download_count == 0:
-        print("⚠ No image files matching the expected patterns were downloaded. Check naming conventions (student ID in filename or path).")
-        # Provide extra diagnostic context to help CI/debugging: show samples of the objects that were present and why they were skipped.
-        try:
-            non_images = []
-            no_student_id = []
-            for file_entry in all_files[:200]:
-                remote_path = file_entry.get("id") or file_entry.get("name")
-                if not remote_path:
-                    continue
-                fn = Path(str(remote_path)).name
-                if Path(fn).suffix.lower() not in (".jpg", ".jpeg", ".png"):
-                    non_images.append(str(remote_path))
-                    continue
-                import re
-                if not re.search(r"(\d{10})", str(remote_path)) and not (len(fn) >= 10 and fn[:10].isdigit()):
-                    no_student_id.append(str(remote_path))
-            if non_images:
-                print("🔎 Sample non-image objects (up to 10):", non_images[:10])
-            if no_student_id:
-                print("🔎 Sample image objects without 10-digit student id (up to 10):", no_student_id[:10])
-            if not non_images and not no_student_id:
-                print("🔎 Objects were found but none could be downloaded or contained data; enable additional debugging to inspect responses.")
-        except Exception:
-            pass
-
+    print(f"\n✨ Summary: Downloaded {download_count} images into {local_images_dir}")
     return download_count > 0
