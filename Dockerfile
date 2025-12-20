@@ -1,23 +1,43 @@
-# Use a lightweight Python base image
-FROM python:3.11-slim
-
+# --- STAGE 1: BUILDER ---
+FROM continuumio/miniconda3:latest AS builder
 WORKDIR /app
 
-# System dependencies (for Supabase / FastAPI)
+# System dependencies for compiling InsightFace/OpenCV
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
+    build-essential \
+    cmake \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the app code
+# Create env and install heavy binaries via Conda
+RUN conda create -n student_env python=3.11 -y && \
+    conda install -n student_env -c conda-forge opencv onnxruntime -y --quiet && \
+    /opt/conda/envs/student_env/bin/pip install --no-cache-dir -r requirements.txt && \
+    conda clean -afy
+
+# --- STAGE 2: FINAL RUNTIME ---
+FROM continuumio/miniconda3:latest
+WORKDIR /app
+
+# Essential libraries for Streamlit and OpenCV to run in Docker
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the built environment
+COPY --from=builder /opt/conda/envs/student_env /opt/conda/envs/student_env
+
+# Set environment variables
+ENV PATH="/opt/conda/envs/student_env/bin:$PATH"
+ENV PORT=8501
+
 COPY . .
 
-# Expose FastAPI port
-ENV PORT=8000
+# Expose Streamlit's default port
 EXPOSE $PORT
 
-# Run FastAPI
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port $PORT"]
+# Run Streamlit using the Conda environment
+CMD ["sh", "-c", "streamlit run app.py --server.port $PORT --server.address 0.0.0.0"]

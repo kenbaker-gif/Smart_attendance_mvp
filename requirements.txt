@@ -1,7 +1,8 @@
 fastapi
 uvicorn
-numpy
+numpy<2.0.0
 Pillow
 python-dotenv
 supabase
 python-multipart
+insightface
