@@ -22,7 +22,8 @@ load_dotenv()
 # Project root and paths
 # -----------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent
-DATA_DIR = PROJECT_ROOT / "streamlit" / "data"
+# Store data under the 'data' subfolder of this streamlit package (avoid duplicating 'streamlit' in the path)
+DATA_DIR = PROJECT_ROOT / "data"
 RAW_FACES_DIR = DATA_DIR / "raw_faces"
 ENCODINGS_PATH = DATA_DIR / "encodings_insightface.pkl"
 TEMP_CAPTURE_PATH = DATA_DIR / "tmp_capture.jpg"

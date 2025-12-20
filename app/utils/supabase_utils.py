@@ -49,13 +49,30 @@ def download_all_supabase_images(
     clear_local: bool = True,
 ) -> bool:
 
+    local_path = Path(local_images_dir)
+
+    # If local images already exist and the caller does not want to clear them,
+    # skip the Supabase download to avoid unnecessary network calls and avoid
+    # overwriting local images.
+    def _local_has_images(p: Path) -> bool:
+        try:
+            for f in p.rglob("*"):
+                if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png"):
+                    return True
+        except Exception:
+            return False
+        return False
+
+    if local_path.exists() and not clear_local and _local_has_images(local_path):
+        print(f"⚠ Skipping Supabase download: local images already exist in {local_path}")
+        return True
+
     try:
         supabase = create_client(supabase_url, supabase_key)
     except Exception as e:
         print(f"❌ Failed to initialize Supabase client: {e}")
         return False
 
-    local_path = Path(local_images_dir)
     storage_api = supabase.storage.from_(supabase_bucket)
 
     try:
