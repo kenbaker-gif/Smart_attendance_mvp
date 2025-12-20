@@ -15,6 +15,15 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # --- NEW CACHING LOGIC ---
+      - name: Cache InsightFace models
+        uses: actions/cache@v4
+        with:
+          path: ~/.insightface/models/
+          key: ${{ runner.os }}-insightface-buffalo-s
+          restore-keys: |
+            ${{ runner.os }}-insightface-
+
       - name: Install System Dependencies
         run: |
           sudo apt-get update
@@ -28,9 +37,7 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          # Ensure streamlit and dependencies are installed
           pip install streamlit onnxruntime opencv-python-headless supabase insightface python-dotenv
-          # Also install from requirements if it exists
           if [ -f streamlit/requirements.txt ]; then pip install -r streamlit/requirements.txt; fi
 
       - name: Run Pregenerate Encodings
@@ -50,7 +57,6 @@ jobs:
           echo "=== CHECKING DATA DIRECTORY ==="
           if [ -d "streamlit/data/raw_faces" ]; then
             echo "✅ raw_faces directory exists."
-            echo "Contents (Student ID folders):"
             ls streamlit/data/raw_faces
           else
             echo "❌ ERROR: streamlit/data/raw_faces not found."
@@ -59,7 +65,6 @@ jobs:
           echo "=== CHECKING FOR PICKLE OUTPUT ==="
           if [ -f "streamlit/data/encodings_insightface.pkl" ]; then
             echo "✅ Encodings file successfully created."
-            du -h streamlit/data/encodings_insightface.pkl
           else
             echo "❌ ERROR: encodings_insightface.pkl was NOT created."
           fi
@@ -77,20 +82,10 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
-          ENCODINGS_PICKLE_PATH: "streamlit/data/encodings_insightface.pkl"
         run: |
           if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ]; then
-            echo "Supabase secrets missing, skipping cloud upload."
+            echo "Secrets missing, skipping cloud upload."
             exit 0
           fi
-          
-          # Find the script dynamically to avoid "No such file" errors
           UPLOAD_SCRIPT=$(find . -name "upload_encodings_to_supabase.py" | head -n 1)
-          
-          if [ -z "$UPLOAD_SCRIPT" ]; then
-            echo "❌ ERROR: Could not find upload_encodings_to_supabase.py"
-            exit 1
-          fi
-          
-          echo "🚀 Running upload script: $UPLOAD_SCRIPT"
           python "$UPLOAD_SCRIPT"
