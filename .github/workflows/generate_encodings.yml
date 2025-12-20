@@ -28,8 +28,8 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          # Ensure streamlit is installed so app.py can be imported/run
-          pip install streamlit onnxruntime opencv-python-headless supabase insightface dotenv
+          # Ensure streamlit and dependencies are installed
+          pip install streamlit onnxruntime opencv-python-headless supabase insightface python-dotenv
           # Also install from requirements if it exists
           if [ -f streamlit/requirements.txt ]; then pip install -r streamlit/requirements.txt; fi
 
@@ -39,9 +39,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
-          # Path helper for Python imports
           PYTHONPATH: ${{ github.workspace }}/streamlit
-        # We run this from the streamlit directory so app.py finds its relative folders
         working-directory: ./streamlit
         run: |
           python app.py --generate
@@ -79,12 +77,20 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
-          # Ensure this matches the path expected by your upload script
           ENCODINGS_PICKLE_PATH: "streamlit/data/encodings_insightface.pkl"
         run: |
           if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ]; then
             echo "Supabase secrets missing, skipping cloud upload."
             exit 0
           fi
-          # Run the upload script located in your scripts folder
-          python streamlit/scripts/upload_encodings_to_supabase.py
+          
+          # Find the script dynamically to avoid "No such file" errors
+          UPLOAD_SCRIPT=$(find . -name "upload_encodings_to_supabase.py" | head -n 1)
+          
+          if [ -z "$UPLOAD_SCRIPT" ]; then
+            echo "❌ ERROR: Could not find upload_encodings_to_supabase.py"
+            exit 1
+          fi
+          
+          echo "🚀 Running upload script: $UPLOAD_SCRIPT"
+          python "$UPLOAD_SCRIPT"
