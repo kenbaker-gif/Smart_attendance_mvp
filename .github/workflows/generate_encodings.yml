@@ -29,6 +29,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          # ONNX Runtime is required by InsightFace; install CPU wheel explicitly
+          pip install onnxruntime
+          # Use headless OpenCV for CI to avoid GUI deps
+          pip install opencv-python-headless
 
       - name: Run pregenerate encodings
         # Optional env vars: set SUPABASE_URL / SUPABASE_KEY / SUPABASE_BUCKET in repo secrets if you want the run to download images
