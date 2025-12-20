@@ -457,7 +457,7 @@ def main():
                             st.error(f"Supabase download failed: {e}")
                         except Exception:
                             pass
-                    st.experimental_rerun()
+                    st.rerun()
 
         # Quick retrain shortcut (keeps existing behavior)
         if st.button("♻️ Retrain Encodings (force)"):
