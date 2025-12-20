@@ -4,6 +4,7 @@ import gc
 import pickle
 import numpy as np
 import streamlit as st
+from streamlit.components.v1 import html
 from pathlib import Path
 from PIL import Image
 from typing import List, Optional
