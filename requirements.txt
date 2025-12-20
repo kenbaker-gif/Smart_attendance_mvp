@@ -6,3 +6,4 @@ python-dotenv
 supabase
 python-multipart
 insightface
+streamlit
