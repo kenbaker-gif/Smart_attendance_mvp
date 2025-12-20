@@ -19,49 +19,29 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # -----------------------------
-# Project root
+# Project root and paths
 # -----------------------------
-ABSOLUTE_PROJECT_ROOT = Path.cwd()
-sys.path.insert(0, str(ABSOLUTE_PROJECT_ROOT))
-
-RAW_FACES_DIR: Path = ABSOLUTE_PROJECT_ROOT / "streamlit" / "data" / "raw_faces"
-ENCODINGS_PATH: Path = ABSOLUTE_PROJECT_ROOT / "streamlit" / "data" / "encodings_insightface.pkl"
-TEMP_CAPTURE_PATH: Path = ABSOLUTE_PROJECT_ROOT / "streamlit" / "data" / "tmp_capture.jpg"
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_DIR = PROJECT_ROOT / "streamlit" / "data"
+RAW_FACES_DIR = DATA_DIR / "raw_faces"
+ENCODINGS_PATH = DATA_DIR / "encodings_insightface.pkl"
+TEMP_CAPTURE_PATH = DATA_DIR / "tmp_capture.jpg"
 
 INSIGHTFACE_MODEL_NAME = "buffalo_s"
 DEFAULT_THRESHOLD = float(os.getenv("THRESHOLD", "0.50"))
 
+# Ensure writable directories exist
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+RAW_FACES_DIR.mkdir(parents=True, exist_ok=True)
+
+# -----------------------------
 # Supabase config
-USE_SUPABASE: bool = os.getenv("USE_SUPABASE", "false").lower() == "true"
-SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
-SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
-SUPABASE_BUCKET: str = os.getenv("SUPABASE_BUCKET", "")
-
 # -----------------------------
-# Logging
-# -----------------------------
-LOG_DIR = ABSOLUTE_PROJECT_ROOT / "logs"
-LOG_FILE = LOG_DIR / "attendance.log"
-LOG_DIR.mkdir(exist_ok=True, parents=True)
+USE_SUPABASE = os.getenv("USE_SUPABASE", "false").lower() == "true"
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "")
 
-logger = logging.getLogger("attendance_system")
-logger.setLevel(logging.DEBUG)
-if logger.hasHandlers():
-    logger.handlers.clear()
-
-file_handler = RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")
-file_handler.setLevel(logging.INFO)
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s")
-file_handler.setFormatter(formatter)
-console_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
-logger.addHandler(console_handler)
-
-# -----------------------------
-# Supabase integration
-# -----------------------------
 download_all_supabase_images = None
 supabase = None
 
@@ -70,28 +50,46 @@ if USE_SUPABASE:
         from supabase import create_client
         if SUPABASE_URL and SUPABASE_KEY:
             supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-            logger.info("✅ Supabase client initialized")
+            print("✅ Supabase client initialized")
         else:
-            logger.warning("⚠ Supabase client not initialized: URL or KEY missing.")
+            print("⚠ Supabase client not initialized: URL or KEY missing.")
             USE_SUPABASE = False
     except Exception as e:
-        logger.error(f"Supabase init failed: {e}")
+        print(f"❌ Supabase init failed: {e}")
         USE_SUPABASE = False
 
     # Safe import of supabase_utils
     try:
         from app.utils.supabase_utils import download_all_supabase_images
     except ImportError:
-        logger.warning("⚠ Could not import supabase_utils. Supabase downloads disabled.")
+        print("⚠ Could not import supabase_utils. Supabase downloads disabled.")
         download_all_supabase_images = None
 
 # -----------------------------
-# InsightFace
+# Logging
+# -----------------------------
+LOG_DIR = PROJECT_ROOT / "logs"
+LOG_FILE = LOG_DIR / "attendance.log"
+LOG_DIR.mkdir(exist_ok=True, parents=True)
+logger = logging.getLogger("attendance_system")
+logger.setLevel(logging.DEBUG)
+if logger.hasHandlers():
+    logger.handlers.clear()
+file_handler = RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")
+console_handler = logging.StreamHandler()
+formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s")
+file_handler.setFormatter(formatter)
+console_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+# -----------------------------
+# InsightFace setup
 # -----------------------------
 try:
     from insightface.app import FaceAnalysis
 except ModuleNotFoundError:
-    st.error("❌ ERROR: insightface not found. Install with: pip install insightface[onnx]")
+    st.error("❌ ERROR: insightface not found. Install: pip install insightface[onnx]")
     st.stop()
 
 os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -166,32 +164,25 @@ def _generate_face_encoding_from_image(path: Path) -> Optional[np.ndarray]:
         return None
 
 # -----------------------------
-# Generate encodings
+# Generate/load encodings
 # -----------------------------
 def generate_encodings(images_dir: Path = RAW_FACES_DIR, output_path: Path = ENCODINGS_PATH) -> bool:
     images_dir.mkdir(parents=True, exist_ok=True)
     if USE_SUPABASE and download_all_supabase_images and SUPABASE_URL and SUPABASE_KEY and SUPABASE_BUCKET:
-        logger.info("📦 Downloading images from Supabase...")
+        print("📦 Downloading images from Supabase...")
         ok = download_all_supabase_images(SUPABASE_URL, SUPABASE_KEY, SUPABASE_BUCKET, str(images_dir), clear_local=False)
-        logger.info("✅ Supabase download complete." if ok else "⚠️ Download failed or empty.")
+        print("✅ Supabase download complete." if ok else "⚠️ Download failed or empty.")
 
     encodings, ids = [], []
     student_dirs = sorted([p for p in images_dir.iterdir() if p.is_dir()])
-    logger.info(f"Found {len(student_dirs)} student folders to process.")
-
     for student_dir in student_dirs:
         student_id = student_dir.name
         image_paths = _get_image_paths(student_dir)
-        if not image_paths:
-            logger.info(f"No images for {student_id}, skipping.")
-            continue
-        logger.info(f"Processing {student_id} ({len(image_paths)} images)...")
         for img_path in image_paths:
             emb = _generate_face_encoding_from_image(img_path)
-            if emb is None:
-                continue
-            encodings.append(emb)
-            ids.append(student_id)
+            if emb is not None:
+                encodings.append(emb)
+                ids.append(student_id)
 
     if not encodings:
         logger.error("No encodings generated.")
@@ -208,17 +199,11 @@ def generate_encodings(images_dir: Path = RAW_FACES_DIR, output_path: Path = ENC
         logger.exception(f"Failed to save encodings: {e}")
         return False
 
-# -----------------------------
-# Load encodings
-# -----------------------------
 @st.cache_resource
 def load_encodings():
     if not ENCODINGS_PATH.exists():
         st.info("Encodings missing. Generating from images...")
-        ok = generate_encodings(RAW_FACES_DIR, ENCODINGS_PATH)
-        if not ok:
-            logger.error("Failed to generate encodings.")
-            return np.array([]), [], 0
+        generate_encodings(RAW_FACES_DIR, ENCODINGS_PATH)
     try:
         with open(ENCODINGS_PATH, "rb") as fh:
             data = pickle.load(fh)
@@ -237,44 +222,31 @@ LOG_COOLDOWN_SECONDS = 60
 
 def add_attendance_record(student_id: str, confidence: float, model: str, status: str):
     current_time = datetime.now()
-    
-    # Prevent repeated logging within cooldown
     if status == "success":
         last = _log_cache.get(student_id)
         if last and (current_time - last).total_seconds() < LOG_COOLDOWN_SECONDS:
             return
-
     if not USE_SUPABASE or supabase is None:
         st.toast("Supabase disabled. Attendance not saved.", icon="⚠️")
-        logger.warning(f"DB log skipped for {student_id}: Supabase disabled.")
         return
-
     try:
         record = {
             "student_id": student_id,
             "confidence": float(confidence),
             "detection_method": model,
             "verified": status,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": current_time.isoformat()
         }
-
         response = supabase.table("attendance_records").insert(record).execute()
-
-        # --- Corrected logic ---
-        # The SDK returns .data on success, .error on failure (may be None)
         if hasattr(response, "data") and response.data:
             _log_cache[student_id] = current_time
             st.toast(f"Attendance logged for {student_id}", icon="✅")
-            logger.info(f"Attendance logged for {student_id}: {response.data}")
         elif hasattr(response, "error") and response.error:
             logger.error(f"Supabase insertion failed: {response.error}")
         else:
-            # Catch-all fallback
-            logger.warning(f"Supabase insertion returned unexpected response: {response}")
-
+            logger.warning(f"Unexpected Supabase response: {response}")
     except Exception as e:
         logger.exception("DB insertion failed.")
-
 
 # -----------------------------
 # Main Streamlit App
@@ -285,18 +257,16 @@ def main():
 
     known_encodings, known_ids, encoding_dim = load_encodings()
     threshold = DEFAULT_THRESHOLD
+    st.info(f"System Ready: {len(set(known_ids))} students loaded. Threshold: {threshold}")
 
-    st.info(f"System Ready: {len(set(known_ids))} students loaded. (Model: {INSIGHTFACE_MODEL_NAME}, Threshold: {threshold})")
-
-    student_id_input = st.text_input("Enter Student ID", placeholder="e.g., 2400102415").strip()
+    student_id_input = st.text_input("Enter Student ID").strip()
     camera_input = st.camera_input("Capture Image")
-
     uploaded_embedding = None
 
     if camera_input:
         image = Image.open(camera_input).convert("RGB")
         st.image(image, caption="Captured Image")
-        TEMP_CAPTURE_PATH.parent.mkdir(exist_ok=True, parents=True)
+        TEMP_CAPTURE_PATH.parent.mkdir(parents=True, exist_ok=True)
         image.save(TEMP_CAPTURE_PATH)
         uploaded_embedding = _generate_face_encoding_from_image(TEMP_CAPTURE_PATH)
         if TEMP_CAPTURE_PATH.exists():
@@ -310,7 +280,7 @@ def main():
             st.error("No known encodings loaded")
             return
 
-        uploaded_embedding = uploaded_embedding / (np.linalg.norm(uploaded_embedding)+1e-10)
+        uploaded_embedding /= (np.linalg.norm(uploaded_embedding) + 1e-10)
         dists = 1.0 - np.dot(known_encodings, uploaded_embedding)
         idx = int(np.argmin(dists))
         min_d = float(dists[idx])
