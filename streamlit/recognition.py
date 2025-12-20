@@ -49,9 +49,9 @@ except ModuleNotFoundError:
     raise SystemExit(1)
 
 print("🔍 Initializing InsightFace (buffalo_l, CPU)...")
-app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
+app = FaceAnalysis(name="buffalo_s", providers=["CPUExecutionProvider"])
 app.prepare(ctx_id=-1, det_size=(640, 640))
-print("✅ InsightFace (buffalo_l) ready.")
+print("✅ InsightFace (buffalo_s) ready.")
 
 # ----------------------------------------------------------------------
 # PATH CONFIG

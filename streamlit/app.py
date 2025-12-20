@@ -28,7 +28,7 @@ RAW_FACES_DIR: Path = ABSOLUTE_PROJECT_ROOT / "streamlit" / "data" / "raw_faces"
 ENCODINGS_PATH: Path = ABSOLUTE_PROJECT_ROOT / "streamlit" / "data" / "encodings_insightface.pkl"
 TEMP_CAPTURE_PATH: Path = ABSOLUTE_PROJECT_ROOT / "streamlit" / "data" / "tmp_capture.jpg"
 
-INSIGHTFACE_MODEL_NAME = "buffalo_l"
+INSIGHTFACE_MODEL_NAME = "buffalo_s"
 DEFAULT_THRESHOLD = float(os.getenv("THRESHOLD", "0.50"))
 
 # Supabase config
