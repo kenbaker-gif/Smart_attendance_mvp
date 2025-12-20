@@ -15,7 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install system deps (for OpenCV/onnx)
+      - name: Install system deps
         run: |
           sudo apt-get update
           sudo apt-get install -y libglib2.0-0 libsm6 libxrender1 libxext6 libgl1 ffmpeg
@@ -23,33 +23,43 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.11
+          python-version: "3.11"
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # Ensure critical dependencies are present for CI
           pip install onnxruntime opencv-python-headless supabase insightface
 
       - name: Run pregenerate encodings
         env:
+          # We force USE_SUPABASE to true here to ensure the script attempts a download
+          USE_SUPABASE: "true"
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
-          USE_SUPABASE: ${{ secrets.USE_SUPABASE }}
         run: |
+          # Create directory explicitly just in case
+          mkdir -p streamlit/data/raw_faces
           python scripts/pregenerate_encodings.py
 
-      - name: 🔍 Diagnostic - List Downloaded Files
+      - name: 🔍 Diagnostic - Why did it fail?
         if: always()
         run: |
-          echo "=== Directory Structure Check ==="
-          echo "Current Path: $(pwd)"
-          if [ -d "streamlit/data" ]; then
-            ls -R streamlit/data/
+          echo "=== CHECKING DIRECTORY STRUCTURE ==="
+          if [ -d "streamlit/data/raw_faces" ]; then
+            echo "✅ raw_faces directory exists."
+            echo "Contents of raw_faces (recursive):"
+            ls -R streamlit/data/raw_faces
           else
-            echo "❌ Directory streamlit/data does not exist!"
+            echo "❌ ERROR: streamlit/data/raw_faces does not exist."
+          fi
+          
+          echo "=== CHECKING FOR OUTPUT PICKLE ==="
+          if [ -f "streamlit/data/encodings_insightface.pkl" ]; then
+            echo "✅ Encodings file was created."
+          else
+            echo "❌ ERROR: encodings_insightface.pkl was NOT created."
           fi
 
       - name: Upload encodings artifact
@@ -68,11 +78,7 @@ jobs:
           ENCODINGS_REMOTE_PATH: ${{ secrets.ENCODINGS_REMOTE_PATH }}
         run: |
           if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ] || [ -z "$SUPABASE_BUCKET" ]; then
-            echo "Supabase secrets not set; skipping upload step."
+            echo "Secrets not set; skipping upload."
             exit 0
           fi
-          if [ -f "scripts/upload_encodings_to_supabase.py" ]; then
-            python scripts/upload_encodings_to_supabase.py
-          else
-            echo "Upload script not found, skipping."
-          fi
+          python scripts/upload_encodings_to_supabase.py
