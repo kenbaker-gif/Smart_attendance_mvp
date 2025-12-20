@@ -101,14 +101,43 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 @st.cache_resource(show_spinner=False)
-def init_insightface():
-    logger.info(f"Initializing InsightFace: {INSIGHTFACE_MODEL_NAME} (CPU)")
-    app = FaceAnalysis(name=INSIGHTFACE_MODEL_NAME, providers=["CPUExecutionProvider"])
+def init_insightface(model_name: str = INSIGHTFACE_MODEL_NAME):
+    logger.info(f"Initializing InsightFace: {model_name} (CPU)")
+    app = FaceAnalysis(name=model_name, providers=["CPUExecutionProvider"])
     app.prepare(ctx_id=-1, det_size=(640, 640))
     logger.info("InsightFace ready.")
     return app
 
-app = init_insightface()
+# --- Deferred initialization with fallback ---
+INSIGHTFACE_MODEL_ALTERNATIVES = [m.strip() for m in os.getenv("INSIGHTFACE_MODELS", INSIGHTFACE_MODEL_NAME + ",buffalo_s").split(",") if m.strip()]
+_app_instance = None
+
+def get_insightface_app(manual: bool = False):
+    """Attempt to initialize insightface lazily. Returns the instance or None on failure.
+    If manual=True, do not use cache decorator (used when invoked by the UI manual button).
+    """
+    global _app_instance
+    if _app_instance is not None:
+        return _app_instance
+
+    for model in INSIGHTFACE_MODEL_ALTERNATIVES:
+        try:
+            logger.info(f"Attempting to initialize InsightFace model: {model}")
+            # Use cached initializer for deterministic loading where possible
+            try:
+                inst = init_insightface(model)
+            except Exception:
+                # Fallback to direct construction if cache wrapper causes troubles
+                inst = FaceAnalysis(name=model, providers=["CPUExecutionProvider"])
+                inst.prepare(ctx_id=-1, det_size=(640, 640))
+            _app_instance = inst
+            logger.info(f"InsightFace initialized with model {model}")
+            return _app_instance
+        except Exception as e:
+            logger.exception(f"InsightFace init failed for model {model}: {e}")
+
+    logger.error("All InsightFace model initializations failed; face recognition disabled.")
+    return None
 
 # -----------------------------
 # Utilities
@@ -150,7 +179,13 @@ def _generate_face_encoding_from_image(path: Path) -> Optional[np.ndarray]:
             logger.warning(f"Failed to read image {path}")
             return None
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        faces = app.get(img_rgb)
+
+        insight_app = get_insightface_app()
+        if insight_app is None:
+            logger.warning("InsightFace is not available in this environment; cannot generate embedding.")
+            return None
+
+        faces = insight_app.get(img_rgb)
         if not faces:
             logger.info(f"No face detected in {path.name}")
             return None
@@ -351,7 +386,24 @@ def main():
         st.write("Supabase enabled:", USE_SUPABASE)
         st.write("Supabase client initialized:", supabase is not None)
 
+        # InsightFace readiness (non-blocking)
+        try:
+            st.write("InsightFace model alternatives:", INSIGHTFACE_MODEL_ALTERNATIVES)
+            st.write("InsightFace initialized:", _app_instance is not None)
+        except Exception as _e:
+            st.write("InsightFace info unavailable:", _e)
+
     student_id_input = st.text_input("Enter Student ID", placeholder="e.g., 2400102415").strip()
+
+    # Manual model initialization button (avoids OOM during automatic startup)
+    if st.button("⚡ Initialize Face Model (manual)"):
+        with st.spinner("Initializing face model (this can use a lot of memory)..."):
+            inst = get_insightface_app(manual=True)
+        if inst is None:
+            st.error("Model initialization failed. Check logs; consider switching to a smaller model via INSIGHTFACE_MODELS or increasing service memory.")
+        else:
+            st.success("Face model initialized successfully.")
+
     camera_input = st.camera_input("Capture Image")
 
     uploaded_embedding = None
