@@ -4,7 +4,6 @@ on:
   workflow_dispatch: {}
   push:
     branches:
-      - main
       - Insightface
 
 jobs:
@@ -15,7 +14,6 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # --- NEW CACHING LOGIC ---
       - name: Cache InsightFace models
         uses: actions/cache@v4
         with:
@@ -23,10 +21,12 @@ jobs:
           key: ${{ runner.os }}-insightface-buffalo-s
           restore-keys: |
             ${{ runner.os }}-insightface-
+
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libglib2.0-0 libsm6 libxrender1 libxext6 libgl1 ffmpeg
+          sudo apt-get install -y libglib2.0-0 libsm6 libxrender1 libxext6 libgl1 ffmpeg build-essential python3-dev
+
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
@@ -35,8 +35,8 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install streamlit onnxruntime opencv-python-headless supabase insightface python-dotenv
-          if [ -f streamlit/requirements.txt ]; then pip install -r streamlit/requirements.txt; fi
+          pip install numpy==1.24.3 onnxruntime opencv-python-headless supabase insightface python-dotenv pydantic streamlit
+
       - name: Run Pregenerate Encodings
         env:
           USE_SUPABASE: "true"
@@ -46,30 +46,22 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/streamlit
         working-directory: ./streamlit
         run: |
-          python app.py --generate
-      - name: 🔍 Diagnostic - File System Check
-        if: always()
-        run: |
-          echo "=== CHECKING DATA DIRECTORY ==="
-          if [ -d "streamlit/data/raw_faces" ]; then
-            echo "✅ raw_faces directory exists."
-            ls streamlit/data/raw_faces
-          else
-            echo "❌ ERROR: streamlit/data/raw_faces not found."
-          fi
+          # 1. Create directory structure
+          mkdir -p data/raw_faces
           
-          echo "=== CHECKING FOR PICKLE OUTPUT ==="
-          if [ -f "streamlit/data/encodings_insightface.pkl" ]; then
-            echo "✅ Encodings file successfully created."
+          # 2. Execute the script
+          echo "🚀 Starting Python script..."
+          python app.py --generate
+          
+          # 3. IMMEDIATE VERIFICATION
+          # Since we are in the 'streamlit' folder, the file should be in 'data/'
+          if [ -f "data/encodings_insightface.pkl" ]; then
+            echo "✅ SUCCESS: Encodings file created locally."
           else
-            echo "❌ ERROR: encodings_insightface.pkl was NOT created."
+            echo "❌ ERROR: Encodings file was not found in $(pwd)/data/"
+            ls -R
+            exit 1
           fi
-      - name: Upload Artifact to GitHub
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: face-encodings
-          path: streamlit/data/encodings_insightface.pkl
 
       - name: Upload Encodings to Supabase Storage
         if: success()
@@ -78,9 +70,20 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
         run: |
-          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ]; then
-            echo "Secrets missing, skipping cloud upload."
-            exit 0
-          fi
+          # We look for the upload script globally and run it
           UPLOAD_SCRIPT=$(find . -name "upload_encodings_to_supabase.py" | head -n 1)
-          python "$UPLOAD_SCRIPT"
+          if [ -f "$UPLOAD_SCRIPT" ]; then
+            echo "🚀 Running Upload Script: $UPLOAD_SCRIPT"
+            python "$UPLOAD_SCRIPT"
+          else
+            echo "❌ ERROR: Upload script not found in repository."
+            exit 1
+          fi
+
+      - name: Upload Artifact to GitHub (Safety Backup)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: face-encodings
+          path: streamlit/data/encodings_insightface.pkl
+          if-no-files-found: warn
