@@ -14,6 +14,13 @@ import cv2
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
+# --- Permanent Schema Definition ---
+class AttendanceRecordIn(BaseModel):
+    student_id: str
+    confidence: float
+    detection_method: str
+    verified: str
+
 # -----------------------------
 # Configuration & Paths
 # -----------------------------
@@ -22,6 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_DIR = PROJECT_ROOT / "data"
 RAW_FACES_DIR = DATA_DIR / "raw_faces"
 ENCODINGS_PATH = DATA_DIR / "encodings_insightface.pkl"
+TEMP_CAPTURE_PATH = DATA_DIR / "tmp_capture.jpg"
 LOG_DIR = PROJECT_ROOT / "logs"
 LOG_FILE = LOG_DIR / "attendance.log"
 
@@ -30,297 +38,229 @@ for d in [DATA_DIR, RAW_FACES_DIR, LOG_DIR]:
 
 INSIGHTFACE_MODEL_NAME = "buffalo_s"
 DEFAULT_THRESHOLD = float(os.getenv("THRESHOLD", "0.50"))
-ENCODINGS_REMOTE_PATH = os.getenv(
-    "ENCODINGS_REMOTE_PATH",
-    "raw_faces/encodings/encodings_insightface.pkl"
-)
+# IMPORTANT: Ensure this matches your Supabase folder structure
+ENCODINGS_REMOTE_PATH = os.getenv("ENCODINGS_REMOTE_PATH", "encodings/encodings_insightface.pkl")
 
 # -----------------------------
 # Logging Setup
 # -----------------------------
 logger = logging.getLogger("attendance_system")
 logger.setLevel(logging.INFO)
-if not logger.handlers:
-    file_handler = RotatingFileHandler(
-        LOG_FILE,
-        maxBytes=5 * 1024 * 1024,
-        backupCount=3
-    )
-    file_handler.setFormatter(
-        logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s")
-    )
-    logger.addHandler(file_handler)
+if logger.hasHandlers():
+    logger.handlers.clear()
+
+file_handler = RotatingFileHandler(LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3)
+file_handler.setFormatter(logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s"))
+logger.addHandler(file_handler)
 
 # -----------------------------
-# Supabase Configuration
+# Supabase & State
 # -----------------------------
-USE_SUPABASE = os.getenv("USE_SUPABASE", "").lower() == "true"
+USE_SUPABASE = os.getenv("USE_SUPABASE", "false").lower() == "true"
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "")
 
 supabase = None
-if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY:
+download_all_supabase_images = None
+
+if USE_SUPABASE:
     try:
         from supabase import create_client
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        if SUPABASE_URL and SUPABASE_KEY:
+            supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        try:
+            from app.utils.supabase_utils import download_all_supabase_images
+        except ImportError:
+            download_all_supabase_images = None
     except Exception as e:
-        logger.error(f"Supabase init error: {e}")
+        logger.error(f"Supabase init warning: {e}")
 
-# -----------------------------
-# Supabase Helpers
-# -----------------------------
-def sync_images_from_supabase(target_dir: Path):
-    if not supabase:
-        return
-    try:
-        folders = supabase.storage.from_(SUPABASE_BUCKET).list()
-        for folder in folders:
-            student_id = folder["name"]
-            if student_id.startswith("."):
-                continue
-            files = supabase.storage.from_(SUPABASE_BUCKET).list(student_id)
-            for f_info in files:
-                name = f_info["name"]
-                if name.lower().endswith((".jpg", ".jpeg", ".png")):
-                    remote = f"{student_id}/{name}"
-                    local = target_dir / student_id / name
-                    local.parent.mkdir(parents=True, exist_ok=True)
-                    with open(local, "wb") as f:
-                        f.write(
-                            supabase.storage
-                            .from_(SUPABASE_BUCKET)
-                            .download(remote)
-                        )
-    except Exception as e:
-        logger.error(f"Cloud sync error: {e}")
-
-# -----------------------------
-# Data Models
-# -----------------------------
-class AttendanceRecordIn(BaseModel):
-    student_id: str
-    confidence: float
-    detection_method: str
-    verified: str
+if 'log_cache' not in st.session_state:
+    st.session_state.log_cache = {}
+LOG_COOLDOWN_SECONDS = 60
 
 # -----------------------------
 # InsightFace Engine
 # -----------------------------
-@st.cache_resource(show_spinner="Loading AI Models...")
+try:
+    from insightface.app import FaceAnalysis
+except ImportError:
+    st.error("❌ insightface not found.")
+    st.stop()
+
+@st.cache_resource(show_spinner=False)
 def get_insightface(det_size=(640, 640)):
-    try:
-        from insightface.app import FaceAnalysis
-        app = FaceAnalysis(
-            name=INSIGHTFACE_MODEL_NAME,
-            providers=["CPUExecutionProvider"]
-        )
-        app.prepare(ctx_id=-1, det_size=det_size)
-        return app
-    except Exception as e:
-        st.error(f"InsightFace error: {e}")
-        return None
+    _app = FaceAnalysis(name=INSIGHTFACE_MODEL_NAME, providers=["CPUExecutionProvider"])
+    _app.prepare(ctx_id=-1, det_size=det_size)
+    return _app
 
 # -----------------------------
-# Utilities
+# Core Utilities
 # -----------------------------
 def normalize_encodings(vectors: np.ndarray) -> np.ndarray:
-    if vectors.size == 0:
-        return vectors
+    if vectors.size == 0: return vectors
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     norms[norms == 0] = 1
     return vectors / norms
 
 def add_attendance_record(student_id: str, confidence: float, status: str):
-    now = datetime.now()
-    if "log_cache" not in st.session_state:
-        st.session_state.log_cache = {}
-
-    if status == "success":
-        last = st.session_state.log_cache.get(student_id)
-        if last and (now - last) < timedelta(seconds=60):
+    current_time = datetime.now()
+    if status == 'success':
+        last_logged = st.session_state.log_cache.get(student_id)
+        if last_logged and (current_time - last_logged) < timedelta(seconds=LOG_COOLDOWN_SECONDS):
             return
 
-    logger.info(f"{student_id} | {status} | {confidence:.2f}")
+    logger.info(f"Log: {student_id} | Status: {status} | Conf: {confidence:.2f}")
 
     if USE_SUPABASE and supabase:
         try:
             record = AttendanceRecordIn(
                 student_id=student_id,
-                confidence=confidence,
+                confidence=float(confidence),
                 detection_method="insightface_buffalo_s",
                 verified=status
             )
-            supabase.table("attendance_records") \
-                .insert(record.model_dump()) \
-                .execute()
-
-            if status == "success":
-                st.session_state.log_cache[student_id] = now
-
+            data = record.model_dump() if hasattr(record, "model_dump") else record.dict()
+            supabase.table('attendance_records').insert(data).execute()
+            if status == 'success':
+                st.session_state.log_cache[student_id] = current_time
+            st.toast(f"Synced to DB: {student_id}", icon="✅")
         except Exception as e:
-            logger.error(f"DB insert error: {e}")
+            logger.error(f"DB Log Fail: {e}")
 
 # -----------------------------
-# Encoding Pipeline
+# Process Pipeline
 # -----------------------------
-def generate_encodings(
-    images_dir: Path = RAW_FACES_DIR,
-    output_path: Path = ENCODINGS_PATH
-) -> bool:
-
-    if USE_SUPABASE:
-        sync_images_from_supabase(images_dir)
-
-    image_paths = (
-        list(images_dir.glob("**/*.[jJ][pP][gG]")) +
-        list(images_dir.glob("**/*.[pP][nN][gG]"))
-    )
-
-    if not image_paths:
-        return False
-
-    engine = get_insightface()
-    if not engine:
-        return False
+def generate_encodings(images_dir: Path = RAW_FACES_DIR, output_path: Path = ENCODINGS_PATH) -> bool:
+    if USE_SUPABASE and download_all_supabase_images:
+        download_all_supabase_images(SUPABASE_URL, SUPABASE_KEY, SUPABASE_BUCKET, str(images_dir), clear_local=True)
+    
+    student_dirs = sorted([p for p in images_dir.iterdir() if p.is_dir()])
+    if not student_dirs: return False
 
     encodings, ids = [], []
+    for s_dir in student_dirs:
+        student_id = s_dir.name
+        img_files = [p for p in s_dir.iterdir() if p.suffix.lower() in ('.jpg', '.jpeg', '.png')]
+        for img_p in img_files:
+            img_bgr = cv2.imread(str(img_p))
+            if img_bgr is None: continue
+            faces = get_insightface().get(img_bgr)
+            if faces:
+                face = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0])*(f.bbox[3]-f.bbox[1]))
+                encodings.append(face.embedding)
+                ids.append(student_id)
 
-    for img_p in image_paths:
-        student_id = img_p.parent.name
-        img = cv2.imread(str(img_p))
-        if img is None:
-            continue
-
-        faces = engine.get(img)
-        if faces:
-            face = max(
-                faces,
-                key=lambda f:
-                (f.bbox[2] - f.bbox[0]) *
-                (f.bbox[3] - f.bbox[1])
-            )
-            encodings.append(face.embedding)
-            ids.append(student_id)
-
-    if not encodings:
-        return False
-
+    if not encodings: return False
     try:
-        arr = normalize_encodings(
-            np.array(encodings, dtype=np.float32)
-        )
-
+        arr = normalize_encodings(np.array(encodings, dtype=np.float32))
         with open(output_path, "wb") as f:
-            pickle.dump(
-                {"encodings": arr, "ids": np.array(ids)},
-                f
-            )
-
-        # ✅ Upload to Supabase (critical for Railway)
-        if USE_SUPABASE and supabase:
-            supabase.storage.from_(SUPABASE_BUCKET).upload(
-                "raw_faces/encodings/encodings_insightface.pkl",
-                ENCODINGS_PATH.read_bytes(),
-                upsert=True
-            )
-            logger.info("Encodings uploaded to Supabase")
-
+            pickle.dump({"encodings": arr, "ids": np.array(ids)}, f)
         return True
+    except Exception: return False
 
-    except Exception as e:
-        logger.error(f"Encoding generation failed: {e}")
-        return False
-
-# -----------------------------
-# Load Encodings
-# -----------------------------
+@st.cache_resource
 def load_encodings():
-    if not ENCODINGS_PATH.exists() or ENCODINGS_PATH.stat().st_size < 100:
-        if USE_SUPABASE and supabase:
-            try:
-                data = supabase.storage \
-                    .from_(SUPABASE_BUCKET) \
-                    .download(ENCODINGS_REMOTE_PATH)
+    """FIX: Robust download from Supabase if file is missing locally"""
+    if not ENCODINGS_PATH.exists() and USE_SUPABASE and supabase:
+        try:
+            # Clean path to avoid double slashes
+            remote_path = ENCODINGS_REMOTE_PATH.lstrip('/')
+            res = supabase.storage.from_(SUPABASE_BUCKET).download(remote_path)
+            
+            # Extract bytes from response
+            data_bytes = res if isinstance(res, (bytes, bytearray)) else getattr(res, 'content', None)
+            
+            if data_bytes:
                 with open(ENCODINGS_PATH, "wb") as f:
-                    f.write(data)
-            except Exception as e:
-                logger.error(f"Encoding download failed: {e}")
+                    f.write(data_bytes)
+        except Exception as e:
+            print(f"DEBUG: Supabase download failed: {e}")
 
     if ENCODINGS_PATH.exists():
         try:
             with open(ENCODINGS_PATH, "rb") as f:
                 data = pickle.load(f)
-            return (
-                normalize_encodings(np.array(data["encodings"])),
-                [str(i) for i in data["ids"]]
-            )
-        except Exception:
-            pass
-
+            encs = np.array(data.get("encodings", []), dtype=np.float32)
+            ids = [str(i) for i in data.get("ids", [])]
+            return normalize_encodings(encs), ids
+        except Exception as e:
+            print(f"DEBUG: Pickle load failed: {e}")
+            
     return np.array([]), []
 
 # -----------------------------
 # Streamlit UI
 # -----------------------------
 def main():
-    st.set_page_config(
-        page_title="Smart Attendance",
-        page_icon="📸",
-        layout="wide"
-    )
-
-    st.title("📸 Biometric Attendance System")
-
-    engine = get_insightface()
-    if not engine:
-        st.stop()
+    st.set_page_config(page_title="Smart Attendance", page_icon="📸")
+    st.title("📸 Attendance System")
 
     known_encs, known_ids = load_encodings()
-
-    tab1, tab2 = st.tabs(["🎯 Verification", "⚙️ Admin Panel"])
+    tab1, tab2 = st.tabs(["Verification", "Admin Panel"])
 
     with tab1:
-        sid = st.text_input("Student ID")
-        img_file = st.camera_input("Capture Face")
-
+        # Show specific error if DB is empty
+        if known_encs.size == 0:
+            st.error("⚠️ Database Empty. Please 'Sync & Regenerate' in Admin Panel.")
+            
+        sid = st.text_input("Enter Student ID")
+        img_file = st.camera_input("Take Photo")
+        
         if sid and img_file and st.button("Verify Identity"):
             img = Image.open(img_file).convert("RGB")
             img_bgr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-            faces = engine.get(img_bgr)
+            faces = get_insightface().get(img_bgr)
+            
+            if faces:
+                face = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0])*(f.bbox[3]-f.bbox[1]))
+                bbox = face.bbox.astype(int)
+                cv2.rectangle(img_bgr, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
+                st.image(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB), caption="Face Detected")
 
-            if faces and known_encs.size > 0:
-                face = faces[0]
-                emb = face.embedding / (np.linalg.norm(face.embedding) + 1e-10)
-                dists = 1 - np.dot(known_encs, emb)
-                idx = np.argmin(dists)
-
-                if dists[idx] < DEFAULT_THRESHOLD and known_ids[idx] == sid:
-                    st.success(f"WELCOME {sid}")
-                    add_attendance_record(
-                        sid,
-                        1 - dists[idx],
-                        "success"
-                    )
+                captured_emb = face.embedding / (np.linalg.norm(face.embedding) + 1e-10)
+                
+                if known_encs.size > 0:
+                    dists = 1.0 - np.dot(known_encs, captured_emb)
+                    idx = np.argmin(dists)
+                    conf = max(0.0, float(1.0 - dists[idx]))
+                    
+                    if dists[idx] < DEFAULT_THRESHOLD and known_ids[idx] == sid:
+                        st.success(f"WELCOME: {sid} (Match: {conf*100:.1f}%)")
+                        st.balloons()
+                        add_attendance_record(sid, conf, "success")
+                    else:
+                        st.error(f"Verification Failed. Unauthorized.")
+                        add_attendance_record(sid, conf, "failed")
                 else:
-                    st.error("Verification Failed")
+                    st.error("No reference encodings found.")
             else:
-                st.error("Database Empty. Sync in Admin Panel.")
+                st.warning("No face detected. Please try again.")
 
     with tab2:
-        if st.button("🔄 Sync Cloud Data"):
-            with st.spinner("Syncing..."):
+        st.subheader("📊 System Logs")
+        if LOG_FILE.exists():
+            with open(LOG_FILE, "r") as f: log_data = f.read()
+            c1, c2 = st.columns(2)
+            with c1: st.download_button("📥 Download Log", log_data, f"attendance_{datetime.now().date()}.txt")
+            with c2:
+                if st.button("🗑️ Clear Logs"):
+                    with open(LOG_FILE, "w") as f: f.write("")
+                    st.rerun()
+        
+        st.divider()
+        st.write(f"**Local Path:** `{ENCODINGS_PATH}`")
+        if st.button("🔄 Sync & Regenerate Encodings"):
+            with st.spinner("Processing..."):
                 if generate_encodings():
-                    st.success("Synced successfully")
+                    st.success("Updated!")
                     st.rerun()
                 else:
-                    st.error("Sync failed")
+                    st.error("Sync Failed. Check Supabase connection.")
 
-# -----------------------------
-# Entry
-# -----------------------------
 if __name__ == "__main__":
     if "--generate" in sys.argv:
-        generate_encodings()
+        sys.exit(0 if generate_encodings() else 4)
     else:
         main()
