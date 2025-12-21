@@ -12,17 +12,14 @@ import logging
 from logging.handlers import RotatingFileHandler
 import cv2
 from dotenv import load_dotenv
+from pydantic import BaseModel
 
-# --- Schema Integration ---
-try:
-    from schemas import AttendanceRecordIn
-except ImportError:
-    from pydantic import BaseModel, Field
-    class AttendanceRecordIn(BaseModel):
-        student_id: str
-        confidence: float
-        detection_method: str
-        verified: str
+# --- Permanent Schema Definition ---
+class AttendanceRecordIn(BaseModel):
+    student_id: str
+    confidence: float
+    detection_method: str
+    verified: str
 
 # -----------------------------
 # Configuration & Paths
@@ -36,11 +33,9 @@ TEMP_CAPTURE_PATH = DATA_DIR / "tmp_capture.jpg"
 LOG_DIR = PROJECT_ROOT / "logs"
 LOG_FILE = LOG_DIR / "attendance.log"
 
-# Ensure directories exist
 for d in [DATA_DIR, RAW_FACES_DIR, LOG_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
-# Model & Thresholds
 INSIGHTFACE_MODEL_NAME = "buffalo_s"
 DEFAULT_THRESHOLD = float(os.getenv("THRESHOLD", "0.50"))
 ENCODINGS_REMOTE_PATH = os.getenv("ENCODINGS_REMOTE_PATH", "encodings/encodings_insightface.pkl")
@@ -73,12 +68,10 @@ if USE_SUPABASE:
         from supabase import create_client
         if SUPABASE_URL and SUPABASE_KEY:
             supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        
-        # Helper for recursive image sync
         try:
             from app.utils.supabase_utils import download_all_supabase_images
         except ImportError:
-            download_all_supabase_images = None # Action fallback
+            download_all_supabase_images = None
     except Exception as e:
         logger.error(f"Supabase init warning: {e}")
 
@@ -110,21 +103,7 @@ def normalize_encodings(vectors: np.ndarray) -> np.ndarray:
     norms[norms == 0] = 1
     return vectors / norms
 
-def _generate_face_encoding_from_image(path: Path) -> Optional[np.ndarray]:
-    try:
-        img_bgr = cv2.imread(str(path))
-        if img_bgr is None: return None
-        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        faces = get_insightface().get(img_rgb)
-        if not faces: return None
-        face = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0])*(f.bbox[3]-f.bbox[1]))
-        return np.array(face.embedding, dtype=np.float32)
-    except Exception as e:
-        logger.error(f"Encoding generation error: {e}")
-        return None
-
 def add_attendance_record(student_id: str, confidence: float, status: str):
-    """Logs to Supabase with Deduplication and Pydantic Validation."""
     current_time = datetime.now()
     if status == 'success':
         last_logged = st.session_state.log_cache.get(student_id)
@@ -141,7 +120,7 @@ def add_attendance_record(student_id: str, confidence: float, status: str):
                 detection_method="insightface_buffalo_s",
                 verified=status
             )
-            data = record.dict() if hasattr(record, 'dict') else record.model_dump()
+            data = record.model_dump() if hasattr(record, "model_dump") else record.dict()
             supabase.table('attendance_records').insert(data).execute()
             if status == 'success':
                 st.session_state.log_cache[student_id] = current_time
@@ -164,9 +143,12 @@ def generate_encodings(images_dir: Path = RAW_FACES_DIR, output_path: Path = ENC
         student_id = s_dir.name
         img_files = [p for p in s_dir.iterdir() if p.suffix.lower() in ('.jpg', '.jpeg', '.png')]
         for img_p in img_files:
-            emb = _generate_face_encoding_from_image(img_p)
-            if emb is not None:
-                encodings.append(emb)
+            img_bgr = cv2.imread(str(img_p))
+            if img_bgr is None: continue
+            faces = get_insightface().get(img_bgr)
+            if faces:
+                face = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0])*(f.bbox[3]-f.bbox[1]))
+                encodings.append(face.embedding)
                 ids.append(student_id)
 
     if not encodings: return False
@@ -175,8 +157,7 @@ def generate_encodings(images_dir: Path = RAW_FACES_DIR, output_path: Path = ENC
         with open(output_path, "wb") as f:
             pickle.dump({"encodings": arr, "ids": np.array(ids)}, f)
         return True
-    except Exception:
-        return False
+    except Exception: return False
 
 @st.cache_resource
 def load_encodings():
@@ -185,8 +166,7 @@ def load_encodings():
             res = supabase.storage.from_(SUPABASE_BUCKET).download(ENCODINGS_REMOTE_PATH)
             data_bytes = res if isinstance(res, (bytes, bytearray)) else getattr(res, 'content', None)
             if data_bytes:
-                with open(ENCODINGS_PATH, "wb") as f:
-                    f.write(data_bytes)
+                with open(ENCODINGS_PATH, "wb") as f: f.write(data_bytes)
         except Exception: pass
 
     if ENCODINGS_PATH.exists():
@@ -205,10 +185,6 @@ def main():
     st.title("📸 Attendance System")
 
     known_encs, known_ids = load_encodings()
-    
-    if known_encs.size == 0:
-        st.warning("No student data loaded. Use Admin Panel to generate.")
-
     tab1, tab2 = st.tabs(["Verification", "Admin Panel"])
 
     with tab1:
@@ -216,12 +192,23 @@ def main():
         img_file = st.camera_input("Take Photo")
         
         if sid and img_file and st.button("Verify Identity"):
+            # UI Feedback: Drawing Bounding Box
             img = Image.open(img_file).convert("RGB")
-            img.save(TEMP_CAPTURE_PATH)
-            captured_emb = _generate_face_encoding_from_image(TEMP_CAPTURE_PATH)
+            img_bgr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
             
-            if captured_emb is not None:
-                captured_emb /= (np.linalg.norm(captured_emb) + 1e-10)
+            faces = get_insightface().get(img_bgr)
+            
+            if faces:
+                # Use the largest face
+                face = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0])*(f.bbox[3]-f.bbox[1]))
+                bbox = face.bbox.astype(int)
+                
+                # Draw visual feedback
+                cv2.rectangle(img_bgr, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
+                st.image(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB), caption="Face Detected")
+
+                # Recognition Logic
+                captured_emb = face.embedding / (np.linalg.norm(face.embedding) + 1e-10)
                 dists = 1.0 - np.dot(known_encs, captured_emb)
                 idx = np.argmin(dists)
                 conf = max(0.0, float(1.0 - dists[idx]))
@@ -231,17 +218,17 @@ def main():
                     st.balloons()
                     add_attendance_record(sid, conf, "success")
                 else:
-                    st.error(f"Failed. Matched with {known_ids[idx]}? Dist: {dists[idx]:.3f}")
+                    st.error(f"Verification Failed. Match ID: {known_ids[idx]}")
                     add_attendance_record(sid, conf, "failed")
+            else:
+                st.warning("No face detected. Please try again.")
 
     with tab2:
         st.subheader("📊 System Logs")
         if LOG_FILE.exists():
-            with open(LOG_FILE, "r") as f:
-                log_data = f.read()
+            with open(LOG_FILE, "r") as f: log_data = f.read()
             c1, c2 = st.columns(2)
-            with c1:
-                st.download_button("📥 Download Log", log_data, f"attendance_{datetime.now().date()}.txt")
+            with c1: st.download_button("📥 Download Log", log_data, f"attendance_{datetime.now().date()}.txt")
             with c2:
                 if st.button("🗑️ Clear Logs"):
                     with open(LOG_FILE, "w") as f: f.write("")
