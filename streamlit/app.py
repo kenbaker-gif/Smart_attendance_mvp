@@ -19,7 +19,6 @@ import importlib.util
 # Configuration & Paths
 # -----------------------------
 load_dotenv()
-# Resolve the root whether running from root or inside /streamlit
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_DIR = PROJECT_ROOT / "data"
 RAW_FACES_DIR = DATA_DIR / "raw_faces"
@@ -27,7 +26,6 @@ ENCODINGS_PATH = DATA_DIR / "encodings_insightface.pkl"
 LOG_DIR = PROJECT_ROOT / "logs"
 LOG_FILE = LOG_DIR / "attendance.log"
 
-# Ensure directories exist
 for d in [DATA_DIR, RAW_FACES_DIR, LOG_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
@@ -56,7 +54,6 @@ SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "")
 supabase = None
 download_all_supabase_images = None
 
-# Bulletproof Utility Loading
 def load_supabase_utils():
     try:
         util_path = PROJECT_ROOT / "app" / "utils" / "supabase_utils.py"
@@ -78,7 +75,6 @@ if USE_SUPABASE:
     except Exception as e:
         logger.error(f"Supabase init error: {e}")
 
-# Permanent Schema
 class AttendanceRecordIn(BaseModel):
     student_id: str
     confidence: float
@@ -88,21 +84,16 @@ class AttendanceRecordIn(BaseModel):
 # -----------------------------
 # InsightFace Engine
 # -----------------------------
-try:
-    from insightface.app import FaceAnalysis
-except ImportError:
-    if "--generate" not in sys.argv:
-        st.error("❌ insightface not found.")
-        st.stop()
-    else:
-        print("❌ Error: insightface not installed.")
-        sys.exit(1)
-
-@st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner="Loading AI Models...")
 def get_insightface(det_size=(640, 640)):
-    _app = FaceAnalysis(name=INSIGHTFACE_MODEL_NAME, providers=["CPUExecutionProvider"])
-    _app.prepare(ctx_id=-1, det_size=det_size)
-    return _app
+    try:
+        from insightface.app import FaceAnalysis
+        _app = FaceAnalysis(name=INSIGHTFACE_MODEL_NAME, providers=["CPUExecutionProvider"])
+        _app.prepare(ctx_id=-1, det_size=det_size)
+        return _app
+    except Exception as e:
+        st.error(f"Engine Error: {e}")
+        return None
 
 # -----------------------------
 # Core Utilities
@@ -144,20 +135,18 @@ def add_attendance_record(student_id: str, confidence: float, status: str):
 # -----------------------------
 def generate_encodings(images_dir: Path = RAW_FACES_DIR, output_path: Path = ENCODINGS_PATH) -> bool:
     print(f"📂 Scanning directory: {images_dir}")
-    
-    # 1. Force download images from Supabase first
     if USE_SUPABASE and download_all_supabase_images:
         print("🔄 Downloading images from Supabase...")
         download_all_supabase_images(SUPABASE_URL, SUPABASE_KEY, SUPABASE_BUCKET, str(images_dir), clear_local=True)
     
-    # 2. Check for student folders
     student_dirs = sorted([p for p in images_dir.iterdir() if p.is_dir()])
     if not student_dirs:
-        print("⚠️ No student directories found in raw_faces!")
+        print("⚠️ No student directories found!")
         return False
 
     encodings, ids = [], []
     engine = get_insightface()
+    if not engine: return False
 
     for s_dir in student_dirs:
         student_id = s_dir.name
@@ -167,21 +156,17 @@ def generate_encodings(images_dir: Path = RAW_FACES_DIR, output_path: Path = ENC
             if img_bgr is None: continue
             faces = engine.get(img_bgr)
             if faces:
-                # Get largest face
                 face = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0])*(f.bbox[3]-f.bbox[1]))
                 encodings.append(face.embedding)
                 ids.append(student_id)
                 print(f"✅ Encoded: {student_id}")
 
-    if not encodings:
-        print("❌ No valid faces found in images.")
-        return False
+    if not encodings: return False
 
     try:
         arr = normalize_encodings(np.array(encodings, dtype=np.float32))
         with open(output_path, "wb") as f:
             pickle.dump({"encodings": arr, "ids": np.array(ids)}, f)
-        print(f"🎉 Success! Generated {len(ids)} encodings.")
         return True
     except Exception as e:
         print(f"❌ Pickle error: {e}")
@@ -192,17 +177,18 @@ def load_encodings():
     if not ENCODINGS_PATH.exists() and USE_SUPABASE and supabase:
         try:
             res = supabase.storage.from_(SUPABASE_BUCKET).download(ENCODINGS_REMOTE_PATH)
-            # Handle different return types from Supabase
             data_bytes = res if isinstance(res, (bytes, bytearray)) else getattr(res, 'content', None)
             if data_bytes:
                 with open(ENCODINGS_PATH, "wb") as f: f.write(data_bytes)
-        except Exception as e:
-            logger.error(f"Cloud download fail: {e}")
+        except Exception: pass
 
     if ENCODINGS_PATH.exists():
-        with open(ENCODINGS_PATH, "rb") as f:
-            data = pickle.load(f)
-        return normalize_encodings(np.array(data["encodings"])), [str(i) for i in data["ids"]]
+        try:
+            with open(ENCODINGS_PATH, "rb") as f:
+                data = pickle.load(f)
+            return normalize_encodings(np.array(data["encodings"])), [str(i) for i in data["ids"]]
+        except Exception:
+            return np.array([]), []
     return np.array([]), []
 
 # -----------------------------
@@ -211,6 +197,12 @@ def load_encodings():
 def main():
     st.set_page_config(page_title="Smart Attendance", page_icon="📸", layout="wide")
     st.title("📸 Biometric Attendance System")
+
+    # Step 1: Load Models first to catch silent hangs
+    engine = get_insightface()
+    if not engine:
+        st.error("Could not initialize AI Engine. Check terminal for logs.")
+        st.stop()
 
     known_encs, known_ids = load_encodings()
     tab1, tab2 = st.tabs(["🎯 Verification", "⚙️ Admin Panel"])
@@ -223,41 +215,43 @@ def main():
         
         with col2:
             if sid and img_file and st.button("Verify Identity", use_container_width=True):
-                img = Image.open(img_file).convert("RGB")
-                img_bgr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-                faces = get_insightface().get(img_bgr)
-                
-                if faces:
-                    face = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0])*(f.bbox[3]-f.bbox[1]))
-                    bbox = face.bbox.astype(int)
-                    cv2.rectangle(img_bgr, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
-                    st.image(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB), caption="Analysis Result")
+                try:
+                    img = Image.open(img_file).convert("RGB")
+                    img_bgr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+                    faces = engine.get(img_bgr)
+                    
+                    if faces:
+                        face = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0])*(f.bbox[3]-f.bbox[1]))
+                        bbox = face.bbox.astype(int)
+                        cv2.rectangle(img_bgr, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
+                        st.image(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB), caption="Analysis Result")
 
-                    # Match Logic
-                    captured_emb = face.embedding / (np.linalg.norm(face.embedding) + 1e-10)
-                    if known_encs.size > 0:
-                        dists = 1.0 - np.dot(known_encs, captured_emb)
-                        idx = np.argmin(dists)
-                        conf = float(1.0 - dists[idx])
-                        
-                        if dists[idx] < DEFAULT_THRESHOLD and known_ids[idx] == sid:
-                            st.success(f"WELCOME {sid}! (Match: {conf*100:.1f}%)")
-                            st.balloons()
-                            add_attendance_record(sid, conf, "success")
+                        captured_emb = face.embedding / (np.linalg.norm(face.embedding) + 1e-10)
+                        if known_encs.size > 0:
+                            dists = 1.0 - np.dot(known_encs, captured_emb)
+                            idx = np.argmin(dists)
+                            conf = float(1.0 - dists[idx])
+                            
+                            if dists[idx] < DEFAULT_THRESHOLD and known_ids[idx] == sid:
+                                st.success(f"WELCOME {sid}! (Match: {conf*100:.1f}%)")
+                                st.balloons()
+                                add_attendance_record(sid, conf, "success")
+                            else:
+                                st.error(f"Verification Failed. Incorrect ID or Unauthorized.")
+                                add_attendance_record(sid, conf, "failed")
                         else:
-                            st.error(f"Verification Failed. Unauthorized access attempt.")
-                            add_attendance_record(sid, conf, "failed")
+                            st.error("System Database Empty.")
                     else:
-                        st.error("System Database Empty. Contact Admin.")
-                else:
-                    st.warning("No face detected. Please adjust lighting.")
+                        st.warning("No face detected.")
+                except Exception as e:
+                    st.error(f"Verification Error: {e}")
 
     with tab2:
         st.subheader("📊 System Management")
         c1, c2, c3 = st.columns(3)
         with c1:
             if st.button("🔄 Sync Cloud Data", use_container_width=True):
-                with st.spinner("Syncing..."):
+                with st.spinner("Processing..."):
                     if generate_encodings():
                         st.success("Database Updated!")
                         st.rerun()
@@ -268,6 +262,7 @@ def main():
         with c3:
             if st.button("🗑️ Reset Local Cache", use_container_width=True):
                 if ENCODINGS_PATH.exists(): os.remove(ENCODINGS_PATH)
+                st.cache_resource.clear()
                 st.rerun()
 
 if __name__ == "__main__":
@@ -278,10 +273,11 @@ if __name__ == "__main__":
             print("✨ Generation Complete.")
             sys.exit(0)
         else:
-            # Check if it failed because of 0 images
-            if not any(RAW_FACES_DIR.iterdir()):
-                 print("⚠️ Folder is empty. Creating an empty placeholder to prevent crash.")
+            if RAW_FACES_DIR.exists() and not any(RAW_FACES_DIR.iterdir()):
+                 print("⚠️ Folder is empty. Creating placeholder.")
                  with open(ENCODINGS_PATH, 'wb') as f:
                      pickle.dump({"encodings": np.array([]), "ids": []}, f)
-                 sys.exit(0) # Exit 0 to keep the build green for the demo
+                 sys.exit(0)
             sys.exit(4)
+    else:
+        main()
