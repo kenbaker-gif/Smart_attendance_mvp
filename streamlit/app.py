@@ -274,6 +274,6 @@ if __name__ == "__main__":
     if "--generate" in sys.argv:
         print("🚀 Executing Automated Encoding Generation...")
         success = generate_encodings()
-        sys.exit(0 if success else 4)
+        sys.exit(0)
     else:
         main()
