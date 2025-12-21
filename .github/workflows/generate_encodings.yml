@@ -4,6 +4,7 @@ on:
   workflow_dispatch: {}
   push:
     branches:
+      - main
       - Insightface
 
 jobs:
@@ -14,11 +15,18 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # --- NEW CACHING LOGIC ---
+      - name: Cache InsightFace models
+        uses: actions/cache@v4
+        with:
+          path: ~/.insightface/models/
+          key: ${{ runner.os }}-insightface-buffalo-s
+          restore-keys: |
+            ${{ runner.os }}-insightface-
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libglib2.0-0 libsm6 libxrender1 libxext6 libgl1 ffmpeg build-essential python3-dev
-
+          sudo apt-get install -y libglib2.0-0 libsm6 libxrender1 libxext6 libgl1 ffmpeg
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
@@ -27,8 +35,8 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install numpy==1.24.3 onnxruntime opencv-python-headless supabase insightface python-dotenv pydantic streamlit
-
+          pip install streamlit onnxruntime opencv-python-headless supabase insightface python-dotenv
+          if [ -f streamlit/requirements.txt ]; then pip install -r streamlit/requirements.txt; fi
       - name: Run Pregenerate Encodings
         env:
           USE_SUPABASE: "true"
@@ -38,47 +46,41 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/streamlit
         working-directory: ./streamlit
         run: |
-          # Generates the file into streamlit/data/
           python app.py --generate
+      - name: 🔍 Diagnostic - File System Check
+        if: always()
+        run: |
+          echo "=== CHECKING DATA DIRECTORY ==="
+          if [ -d "streamlit/data/raw_faces" ]; then
+            echo "✅ raw_faces directory exists."
+            ls streamlit/data/raw_faces
+          else
+            echo "❌ ERROR: streamlit/data/raw_faces not found."
+          fi
+          
+          echo "=== CHECKING FOR PICKLE OUTPUT ==="
+          if [ -f "streamlit/data/encodings_insightface.pkl" ]; then
+            echo "✅ Encodings file successfully created."
+          else
+            echo "❌ ERROR: encodings_insightface.pkl was NOT created."
+          fi
+      - name: Upload Artifact to GitHub
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: face-encodings
+          path: streamlit/data/encodings_insightface.pkl
 
-      - name: Upload to Supabase Storage (Cloud Path)
+      - name: Upload Encodings to Supabase Storage
         if: success()
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
         run: |
-          python -c "
-          import os
-          from supabase import create_client
-          
-          # 1. Setup Client
-          url = os.environ.get('SUPABASE_URL')
-          key = os.environ.get('SUPABASE_KEY')
-          bucket = os.environ.get('SUPABASE_BUCKET')
-          supabase = create_client(url, key)
-          
-          # 2. Define Paths
-          local_file = 'streamlit/data/encodings_insightface.pkl'
-          cloud_path = 'raw_faces/encodings/encodings_insightface.pkl'
-          
-          # 3. Upload with Upsert (Overwrite)
-          if os.path.exists(local_file):
-              with open(local_file, 'rb') as f:
-                  supabase.storage.from_(bucket).upload(
-                      path=cloud_path, 
-                      file=f, 
-                      file_options={'upsert': 'true'}
-                  )
-              print(f'✅ Successfully uploaded to: {cloud_path}')
-          else:
-              print(f'❌ Local file {local_file} not found!')
-              exit(1)
-          "
-
-      - name: Upload Artifact to GitHub (Backup)
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: face-encodings
-          path: streamlit/data/encodings_insightface.pkl
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ]; then
+            echo "Secrets missing, skipping cloud upload."
+            exit 0
+          fi
+          UPLOAD_SCRIPT=$(find . -name "upload_encodings_to_supabase.py" | head -n 1)
+          python "$UPLOAD_SCRIPT"
