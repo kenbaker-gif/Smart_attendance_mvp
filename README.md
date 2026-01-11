@@ -1,12 +1,12 @@
-# 📸 Smart Attendance System (AI-Powered Face Recognition)
+# 📸 Smart Attendance System (AI-Powered Face Verification)
 
 An end-to-end AI Attendance System built with FastAPI, Streamlit, InsightFace, Supabase, and deployed on Railway.
-This system performs real-time face recognition using stored student images, automatically marks attendance, and provides a simple user interface for teachers and admins.
+This system performs real-time face verification pushing stored student images, automatically marks attendance, and provides a simple user interface for teachers and admins.
 
 ## 🚀 Features
-## 🧠 AI Face Recognition (InsightFace)
+## 🧠 AI Face Verification (InsightFace)
 
-- Uses InsightFace ArcFace embeddings, one of the most accurate face recognition models available.
+- Uses InsightFace ArcFace embeddings, one of the most accurate face verification models available.
 
 - High-precision embedding generation and matching using cosine similarity.
 
@@ -40,7 +40,7 @@ Clean UI for:
 
 - capturing live webcam images
 
-- displaying recognition results
+- displaying verification results
 
 - viewing attendance logs
 
@@ -163,7 +163,7 @@ similarity = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
 
 ## 🧪 Testing
 
-- You can test recognition by:
+- You can test verification by:
 
 - Uploading student images to Supabase
 
@@ -178,7 +178,7 @@ similarity = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
 | Area                | Technology                          |
 |:-------------------:|:-----------------------------------|
 | Backend             | FastAPI, Python                     |
-| AI/Face Recognition | InsightFace (ArcFace), ONNX Runtime |
+| AI/Face Verification | InsightFace (ArcFace), ONNX Runtime |
 | Database            | Supabase (PostgreSQL + Storage)     |
 | Frontend            | Streamlit                           |
 | Deployment          | Railway                             |
@@ -191,7 +191,7 @@ A quick overview of the important files and folders:
 
 - `app/` - FastAPI backend
   - `main.py` - app entrypoint
-  - `routes/attendance.py` - recognition and attendance endpoints
+  - `routes/attendance.py` - verification and attendance endpoints
 - `streamlit/` - Streamlit frontend and examples
 - `utils/` - helper modules (`face_utils.py`, `supabase_utils.py`)
 - `data/` - optional stored encodings and sample data
