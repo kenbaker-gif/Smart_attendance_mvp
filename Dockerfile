@@ -1,42 +1,25 @@
-# --- STAGE 1: BUILDER (Install dependencies) ---
-FROM continuumio/miniconda3:latest AS builder
+# Use a slim Python image instead of heavy Miniconda
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install minimal system dependencies needed for dlib/face-recognition
+# Install only basic system tools (needed for some networking/OS operations)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 \
-    libglib2.0-0 \
-    cmake \
     build-essential \
-    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
+# Copy requirements first to leverage Docker cache
 COPY requirements.txt .
 
-# Create a minimal environment with only necessary packages
-RUN conda create -n app_env python=3.11 -y && \
-    conda install -n app_env -c conda-forge dlib=19.24 opencv -y --quiet && \
-    /opt/conda/envs/app_env/bin/pip install --no-cache-dir -r requirements.txt && \
-    conda clean -afy
+# Install the 3 lightweight libraries (streamlit, supabase, python-dotenv)
+RUN pip install --no-cache-dir -r requirements.txt
 
-# --- STAGE 2: FINAL IMAGE (Runtime only) ---
-FROM continuumio/miniconda3:latest
-
-WORKDIR /app
-
-# Copy the environment from builder
-COPY --from=builder /opt/conda /opt/conda
-
-# Update PATH
-ENV PATH="/opt/conda/bin:$PATH"
-
-# Copy application code last
+# Copy the rest of your app code
 COPY . .
 
-# Streamlit settings
+# Set environment variables
 ENV PORT=8501
 EXPOSE $PORT
 
-CMD ["sh", "-c", "conda run -n app_env streamlit run streamlit/app.py --server.address=0.0.0.0 --server.port=$PORT"]
+# Run Streamlit directly (No more 'conda run' needed)
+CMD streamlit run streamlit/app.py --server.address=0.0.0.0 --server.port=$PORT
