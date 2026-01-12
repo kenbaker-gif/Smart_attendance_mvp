@@ -1,15 +1,1 @@
-data/processed/
-data/raw_faces/
-*.jpg
-*.png
-*.jpeg
-debug
-debug2
-streamlit/
-*.test.py
 .env
-logs
-**/__pycache__/
-**/*.pyc
-.DS_Store
-Thumbs.db
