@@ -3,81 +3,67 @@ import os
 from supabase import create_client
 from dotenv import load_dotenv
 
-# --- 1. CONFIGURATION & CREDENTIALS ---
+# --- 1. CONFIGURATION ---
 load_dotenv()
-
-# Get variables from .env
 URL = os.getenv("SUPABASE_URL")
 KEY = os.getenv("SUPABASE_KEY")
 BUCKET = os.getenv("SUPABASE_BUCKET", "student_faces")
 
-# Fix trailing slash error automatically
 if URL and not URL.endswith("/"):
     URL += "/"
 
-# Stop app if credentials are missing
 if not URL or not KEY:
-    st.error("❌ Missing SUPABASE_URL or SUPABASE_KEY in .env file.")
+    st.error("❌ Missing credentials in .env")
     st.stop()
 
-# Initialize Supabase
-try:
-    supabase = create_client(URL, KEY)
-except Exception as e:
-    st.error(f"Failed to connect to Supabase: {e}")
-    st.stop()
+supabase = create_client(URL, KEY)
 
-# --- 2. UI SETUP ---
+# --- 2. UI ---
 st.set_page_config(page_title="Sequential Capture", page_icon="📸")
-
 st.title("📸 Student Face Capture")
-st.write("Images are stored as 1.jpg, 2.jpg, etc., inside the student's folder.")
 
-# Input Field
-student_id = st.text_input("Enter Student ID (e.g., 24001)").strip()
+student_id = st.text_input("Enter Student ID").strip()
+camera_image = st.camera_input("Position face in center")
 
-# Camera Widget
-camera_image = st.camera_input("Position face in the center")
-
-# --- 3. LOGIC: COUNT & UPLOAD ---
+# --- 3. UPLOAD LOGIC ---
 if st.button("🚀 Save to Supabase"):
-    if not student_id:
-        st.warning("⚠️ Please enter a Student ID first.")
-    elif not camera_image:
-        st.warning("⚠️ Please take a photo first.")
+    if not student_id or not camera_image:
+        st.warning("⚠️ ID and Photo required!")
     else:
         try:
-            # A. Check existing files to determine next number
-            # We list the folder named after the student_id
+            # A. Get list of existing files
             folder_path = student_id
-            
-            # Use Supabase storage list to find files in that folder
             res = supabase.storage.from_(BUCKET).list(folder_path)
             
-            # Filter list to only count actual .jpg images (ignoring system files)
-            existing_files = [f for f in res if f['name'].lower().endswith('.jpg')]
+            # Count JPGs
+            existing_files = [f['name'] for f in res if f['name'].lower().endswith('.jpg')]
+            next_num = len(existing_files) + 1
             
-            # B. Determine next filename
-            next_number = len(existing_files) + 1
-            file_name = f"{next_number}.jpg"
-            full_storage_path = f"{folder_path}/{file_name}"
-            
-            # C. Upload to Supabase
-            with st.spinner(f"Saving as {file_name}..."):
-                img_bytes = camera_image.getvalue()
+            # B. COLLISION CHECK LOOP
+            # This prevents the '409 Duplicate' error by checking if the name is taken
+            uploaded = False
+            while not uploaded:
+                file_name = f"{next_num}.jpg"
+                full_path = f"{folder_path}/{file_name}"
                 
-                supabase.storage.from_(BUCKET).upload(
-                    path=full_storage_path,
-                    file=img_bytes,
-                    file_options={"content-type": "image/jpeg"}
-                )
-                
-            st.success(f"✅ Success! Saved to `{full_storage_path}`")
-            st.balloons()
+                # Try to upload
+                try:
+                    img_bytes = camera_image.getvalue()
+                    supabase.storage.from_(BUCKET).upload(
+                        path=full_path,
+                        file=img_bytes,
+                        file_options={"content-type": "image/jpeg"}
+                    )
+                    st.success(f"✅ Saved as {full_path}")
+                    uploaded = True # Exit loop
+                except Exception as upload_err:
+                    # If duplicate error occurs, increment and try again
+                    if "already exists" in str(upload_err).lower() or "409" in str(upload_err):
+                        next_num += 1
+                    else:
+                        raise upload_err # If it's a different error, stop and report it
             
         except Exception as e:
             st.error(f"❌ Storage Error: {e}")
 
-# --- 4. FOOTER ---
 st.divider()
-st.caption(f"Bucket: `{BUCKET}` | Logic: Sequential (n+1)")
