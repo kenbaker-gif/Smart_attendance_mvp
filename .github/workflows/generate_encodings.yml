@@ -35,21 +35,19 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install numpy==1.24.3 onnxruntime opencv-python-headless supabase insightface python-dotenv pydantic streamlit sqlalchemy
+          # Added psycopg2-binary below
+          pip install numpy==1.24.3 onnxruntime opencv-python-headless supabase insightface python-dotenv pydantic streamlit sqlalchemy psycopg2-binary
 
       - name: Run Pregenerate Encodings
         env:
           # --- SUPABASE CREDENTIALS (REQUIRED) ---
-          # These are needed to upload the result to storage
           USE_SUPABASE: "true"
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
           
-          # --- DATABASE BYPASS (REQUIRED TO FIX ERROR) ---
-          # We provide dummy values here because app/database.py crashes
-          # if these are missing. Since we are only generating encodings
-          # and not writing to SQL yet, these placeholders prevent the crash.
+          # --- DATABASE BYPASS ---
+          # Placeholders to prevent app/database.py from crashing on import
           DB_USER: "placeholder_user"
           DB_PASSWORD: "placeholder_password"
           DB_HOST: "localhost"
@@ -57,18 +55,13 @@ jobs:
           DB_NAME: "placeholder_db"
 
           # --- PATH CONFIGURATION ---
-          # Adds root workspace to path so 'from app.database' works
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/streamlit
         working-directory: ./streamlit
         run: |
-          # 1. Create directory structure
           mkdir -p data/raw_faces
-          
-          # 2. Execute the script
           echo "🚀 Starting Python script..."
           python main.py --generate
           
-          # 3. IMMEDIATE VERIFICATION
           if [ -f "data/encodings_insightface.pkl" ]; then
             echo "✅ SUCCESS: Encodings file created locally."
           else
@@ -84,10 +77,8 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
         run: |
-          # Attempt to find the upload script in likely locations
+          # Locate upload script
           UPLOAD_SCRIPT=$(find . -name "upload_encodings_to_supabase.py" | head -n 1)
-          
-          # If not found in current dir, check parent
           if [ -z "$UPLOAD_SCRIPT" ]; then
              UPLOAD_SCRIPT=$(find .. -name "upload_encodings_to_supabase.py" | head -n 1)
           fi
@@ -96,8 +87,7 @@ jobs:
             echo "🚀 Running Upload Script: $UPLOAD_SCRIPT"
             python "$UPLOAD_SCRIPT"
           else
-            echo "❌ ERROR: Upload script not found in repository."
-            # List files to help debug where it might be
+            echo "❌ ERROR: Upload script not found."
             ls -R
             exit 1
           fi
