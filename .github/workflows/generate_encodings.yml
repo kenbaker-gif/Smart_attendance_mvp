@@ -35,7 +35,7 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install numpy==1.24.3 onnxruntime opencv-python-headless supabase insightface python-dotenv pydantic streamlit
+          pip install numpy==1.24.3 onnxruntime opencv-python-headless supabase insightface python-dotenv pydantic streamlit sqlalchemy
 
       - name: Run Pregenerate Encodings
         env:
