@@ -39,11 +39,21 @@ jobs:
 
       - name: Run Pregenerate Encodings
         env:
+          # Supabase Credentials
           USE_SUPABASE: "true"
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
-          PYTHONPATH: ${{ github.workspace }}/streamlit
+          
+          # Database Credentials (Required by app/database.py)
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          
+          # Ensure Python can find both the app/ and streamlit/ directories
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/streamlit
         working-directory: ./streamlit
         run: |
           # 1. Create directory structure
@@ -54,7 +64,6 @@ jobs:
           python main.py --generate
           
           # 3. IMMEDIATE VERIFICATION
-          # Since we are in the 'streamlit' folder, the file should be in 'data/'
           if [ -f "data/encodings_insightface.pkl" ]; then
             echo "✅ SUCCESS: Encodings file created locally."
           else
@@ -70,7 +79,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
         run: |
-          # We look for the upload script globally and run it
+          # Look for the upload script (likely in your scripts folder or streamlit folder)
           UPLOAD_SCRIPT=$(find . -name "upload_encodings_to_supabase.py" | head -n 1)
           if [ -f "$UPLOAD_SCRIPT" ]; then
             echo "🚀 Running Upload Script: $UPLOAD_SCRIPT"
