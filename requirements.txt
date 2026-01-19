@@ -7,3 +7,4 @@ supabase
 python-multipart
 insightface
 streamlit
+sqlalchemy
