@@ -39,20 +39,25 @@ jobs:
 
       - name: Run Pregenerate Encodings
         env:
-          # Supabase Credentials
+          # --- SUPABASE CREDENTIALS (REQUIRED) ---
+          # These are needed to upload the result to storage
           USE_SUPABASE: "true"
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
           
-          # Database Credentials (Required by app/database.py)
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_HOST: ${{ secrets.DB_HOST }}
-          DB_PORT: ${{ secrets.DB_PORT }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-          
-          # Ensure Python can find both the app/ and streamlit/ directories
+          # --- DATABASE BYPASS (REQUIRED TO FIX ERROR) ---
+          # We provide dummy values here because app/database.py crashes
+          # if these are missing. Since we are only generating encodings
+          # and not writing to SQL yet, these placeholders prevent the crash.
+          DB_USER: "placeholder_user"
+          DB_PASSWORD: "placeholder_password"
+          DB_HOST: "localhost"
+          DB_PORT: "5432"
+          DB_NAME: "placeholder_db"
+
+          # --- PATH CONFIGURATION ---
+          # Adds root workspace to path so 'from app.database' works
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/streamlit
         working-directory: ./streamlit
         run: |
@@ -79,13 +84,21 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
         run: |
-          # Look for the upload script (likely in your scripts folder or streamlit folder)
+          # Attempt to find the upload script in likely locations
           UPLOAD_SCRIPT=$(find . -name "upload_encodings_to_supabase.py" | head -n 1)
-          if [ -f "$UPLOAD_SCRIPT" ]; then
+          
+          # If not found in current dir, check parent
+          if [ -z "$UPLOAD_SCRIPT" ]; then
+             UPLOAD_SCRIPT=$(find .. -name "upload_encodings_to_supabase.py" | head -n 1)
+          fi
+
+          if [ -n "$UPLOAD_SCRIPT" ]; then
             echo "🚀 Running Upload Script: $UPLOAD_SCRIPT"
             python "$UPLOAD_SCRIPT"
           else
             echo "❌ ERROR: Upload script not found in repository."
+            # List files to help debug where it might be
+            ls -R
             exit 1
           fi
 
