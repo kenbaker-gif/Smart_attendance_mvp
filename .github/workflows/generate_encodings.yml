@@ -10,6 +10,24 @@ jobs:
   generate-encodings:
     runs-on: ubuntu-latest
 
+    # [CRITICAL] This block must be aligned with 'steps' (same indentation level)
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: placeholder_user
+          POSTGRES_PASSWORD: placeholder_password
+          POSTGRES_DB: placeholder_db
+        # Map port 6543 (host) to 5432 (container)
+        ports:
+          - 6543:5432
+        # Health check ensures DB is ready before Python starts
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -35,72 +53,39 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
+          # We include psycopg2-binary so SQLAlchemy can talk to the dummy DB
           pip install numpy==1.24.3 onnxruntime opencv-python-headless supabase insightface python-dotenv pydantic streamlit sqlalchemy psycopg2-binary
 
-      - name: Run Pregenerate Encodings
+      # [OPTIONAL] Debug step to confirm Secrets are present
+      - name: 🕵️ Debug Secrets Presence
         env:
-          # --- SUPABASE CREDENTIALS (REQUIRED) ---
-          # These are needed to upload the result to storage
+          CHECK_URL: ${{ secrets.SUPABASE_URL }}
+          CHECK_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          if [ -z "$CHECK_URL" ]; then echo "❌ SUPABASE_URL is MISSING"; else echo "✅ SUPABASE_URL is set"; fi
+          if [ -z "$CHECK_KEY" ]; then echo "❌ SUPABASE_KEY is MISSING"; else echo "✅ SUPABASE_KEY is set"; fi
+
+      - name: Run Generate Encodings
+        env:
+          # --- REAL SUPABASE CREDENTIALS (for file upload) ---
           USE_SUPABASE: "true"
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
           
-          # --- DATABASE BYPASS (REQUIRED TO FIX ERROR) ---
-          # We provide dummy values here because app/database.py crashes
-          # if these are missing. Since we are only generating encodings
-          # and not writing to SQL yet, these placeholders prevent the crash.
+          # --- DUMMY DB CREDENTIALS (matches 'services' above) ---
           DB_USER: "placeholder_user"
           DB_PASSWORD: "placeholder_password"
           DB_HOST: "localhost"
-          DB_PORT: "5432"
+          DB_PORT: "6543" 
           DB_NAME: "placeholder_db"
 
-          # --- PATH CONFIGURATION ---
-          # Adds root workspace to path so 'from app.database' works
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/streamlit
         working-directory: ./streamlit
         run: |
-          # 1. Create directory structure
           mkdir -p data/raw_faces
-          
-          # 2. Execute the script
-          echo "🚀 Starting Python script..."
+          echo "🚀 Starting main.py..."
           python main.py --generate
-          
-          # 3. IMMEDIATE VERIFICATION
-          if [ -f "data/encodings_insightface.pkl" ]; then
-            echo "✅ SUCCESS: Encodings file created locally."
-          else
-            echo "❌ ERROR: Encodings file was not found in $(pwd)/data/"
-            ls -R
-            exit 1
-          fi
-
-      - name: Upload Encodings to Supabase Storage
-        if: success()
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
-        run: |
-          # Attempt to find the upload script in likely locations
-          UPLOAD_SCRIPT=$(find . -name "upload_encodings_to_supabase.py" | head -n 1)
-          
-          # If not found in current dir, check parent
-          if [ -z "$UPLOAD_SCRIPT" ]; then
-             UPLOAD_SCRIPT=$(find .. -name "upload_encodings_to_supabase.py" | head -n 1)
-          fi
-
-          if [ -n "$UPLOAD_SCRIPT" ]; then
-            echo "🚀 Running Upload Script: $UPLOAD_SCRIPT"
-            python "$UPLOAD_SCRIPT"
-          else
-            echo "❌ ERROR: Upload script not found in repository."
-            # List files to help debug where it might be
-            ls -R
-            exit 1
-          fi
 
       - name: Upload Artifact to GitHub (Safety Backup)
         if: always()
