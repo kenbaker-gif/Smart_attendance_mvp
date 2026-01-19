@@ -21,8 +21,7 @@ logs/
 # Streamlit
 # --------------------
 streamlit/*
-!streamlit/app.py
-!streamlit/recognition.py
+!streamlit/main.py
 
 streamlit/data/
 streamlit/logs/
