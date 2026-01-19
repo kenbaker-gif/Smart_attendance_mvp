@@ -8,3 +8,4 @@ python-multipart
 insightface
 streamlit
 sqlalchemy
+psycopg2-binary

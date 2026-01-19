@@ -51,7 +51,7 @@ jobs:
           
           # 2. Execute the script
           echo "🚀 Starting Python script..."
-          python app.py --generate
+          python main.py --generate
           
           # 3. IMMEDIATE VERIFICATION
           # Since we are in the 'streamlit' folder, the file should be in 'data/'
