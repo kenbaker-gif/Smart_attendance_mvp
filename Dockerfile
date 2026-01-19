@@ -40,4 +40,4 @@ COPY . .
 EXPOSE $PORT
 
 # Run Streamlit using the Conda environment
-CMD ["sh", "-c", "streamlit run streamlit/app.py --server.port $PORT --server.address 0.0.0.0"]
+CMD ["sh", "-c", "streamlit run streamlit/main.py --server.port $PORT --server.address 0.0.0.0"]
