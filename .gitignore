@@ -38,6 +38,7 @@ streamlit/*.pyc
 # Environment secrets
 # --------------------
 .env
+secrets.env
 
 # --------------------
 # Python cache
