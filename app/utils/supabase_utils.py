@@ -115,11 +115,15 @@ def upload_encodings_to_supabase(
     try:
         supabase = create_client(supabase_url, supabase_key)
         
-        print(f"☁️ Uploading {remote_file_name} to {supabase_bucket}...")
+        # ✅ FIX 1: Ensure upload goes to the right folder if needed
+        # (Though usually the generator script handles the upload, this is a good backup)
+        target_path = f"encodings/{remote_file_name}" 
+        
+        print(f"☁️ Uploading {target_path} to {supabase_bucket}...")
         
         with open(path, "rb") as f:
             supabase.storage.from_(supabase_bucket).upload(
-                path=remote_file_name,
+                path=target_path,
                 file=f,
                 file_options={"upsert": "true"}
             )
@@ -135,13 +139,18 @@ def upload_encodings_to_supabase(
 # -----------------------------
 def download_encodings_from_supabase(local_save_path: str, bucket_name: str = None) -> bool:
     """
-    Downloads the pickle file directly.
+    Downloads the pickle file directly from 'raw_faces/encodings/...'
     """
     load_dotenv()
     
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
-    bucket = bucket_name or os.getenv("SUPABASE_BUCKET", "biometric-data")
+    
+    # ✅ FIX 2: Force bucket to be 'raw_faces' (The one we know works)
+    bucket = "raw_faces"
+    
+    # ✅ FIX 3: Point to the correct SUBFOLDER
+    source_path = "encodings/encodings_insightface.pkl"
     
     if not url or not key:
         print("Supabase credentials missing.")
@@ -149,13 +158,17 @@ def download_encodings_from_supabase(local_save_path: str, bucket_name: str = No
         
     try:
         sb = create_client(url, key)
-        print(f"⬇️ Downloading encodings_insightface.pkl from {bucket}...")
+        print(f"⬇️ Downloading {source_path} from {bucket}...")
         
-        res = sb.storage.from_(bucket).download("encodings_insightface.pkl")
-        # Use helper to ensure we get bytes safely
+        # ✅ FIX 4: Download the specific file path
+        res = sb.storage.from_(bucket).download(source_path)
+        
         data = _download_bytes_from_response(res)
         
         if data:
+            # Ensure local directory exists
+            os.makedirs(os.path.dirname(local_save_path), exist_ok=True)
+            
             with open(local_save_path, 'wb') as f:
                 f.write(data)
             print("✅ Encodings downloaded successfully.")

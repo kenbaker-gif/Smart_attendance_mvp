@@ -13,7 +13,7 @@ CURRENT_FILE = Path(__file__).resolve()
 APP_DIR = CURRENT_FILE.parent.parent 
 # Point to 'app/streamlit/data'
 DATA_DIR = APP_DIR / "streamlit" / "data"
-ENCODINGS_PATH = DATA_DIR / "encodings_insightface.pkl"
+ENCODINGS_PATH = DATA_DIR / "encodings/encodings_insightface.pkl"
 DEFAULT_THRESHOLD = 0.5
 
 # -----------------------------
