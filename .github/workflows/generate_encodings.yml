@@ -1,37 +1,20 @@
-name: Generate Encodings
+name: Retrain Face Model
 
 on:
   workflow_dispatch: {}
   push:
-    branches:
-      - Insightface
+    paths:
+      - 'scripts/ci_generate_encodings.py'
 
 jobs:
   generate-encodings:
     runs-on: ubuntu-latest
 
-    # [CRITICAL] This block must be aligned with 'steps' (same indentation level)
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: placeholder_user
-          POSTGRES_PASSWORD: placeholder_password
-          POSTGRES_DB: placeholder_db
-        # Map port 6543 (host) to 5432 (container)
-        ports:
-          - 6543:5432
-        # Health check ensures DB is ready before Python starts
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # Cache models to speed up future runs
       - name: Cache InsightFace models
         uses: actions/cache@v4
         with:
@@ -40,57 +23,26 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-insightface-
 
+      # Install System Libs needed for OpenCV
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libglib2.0-0 libsm6 libxrender1 libxext6 libgl1 ffmpeg build-essential python3-dev
+          sudo apt-get install -y libgl1-mesa-glx libglib2.0-0
 
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.11"
 
-      - name: Install Python Dependencies
+      # Install only what the script needs
+      - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          # We include psycopg2-binary so SQLAlchemy can talk to the dummy DB
-          pip install numpy==1.24.3 onnxruntime opencv-python-headless supabase insightface python-dotenv pydantic streamlit sqlalchemy psycopg2-binary
+          pip install numpy==1.24.3 onnxruntime opencv-python-headless supabase insightface requests python-dotenv psycopg2-binary
 
-      # [OPTIONAL] Debug step to confirm Secrets are present
-      - name: 🕵️ Debug Secrets Presence
+      - name: Run Encoding Script
         env:
-          CHECK_URL: ${{ secrets.SUPABASE_URL }}
-          CHECK_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: |
-          if [ -z "$CHECK_URL" ]; then echo "❌ SUPABASE_URL is MISSING"; else echo "✅ SUPABASE_URL is set"; fi
-          if [ -z "$CHECK_KEY" ]; then echo "❌ SUPABASE_KEY is MISSING"; else echo "✅ SUPABASE_KEY is set"; fi
-
-      - name: Run Generate Encodings
-        env:
-          # --- REAL SUPABASE CREDENTIALS (for file upload) ---
-          USE_SUPABASE: "true"
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
-          
-          # --- DUMMY DB CREDENTIALS (matches 'services' above) ---
-          DB_USER: "placeholder_user"
-          DB_PASSWORD: "placeholder_password"
-          DB_HOST: "localhost"
-          DB_PORT: "6543" 
-          DB_NAME: "placeholder_db"
-
-          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/streamlit
-        working-directory: ./streamlit
         run: |
-          mkdir -p data/raw_faces
-          echo "🚀 Starting main.py..."
-          python main.py --generate
-
-      - name: Upload Artifact to GitHub (Safety Backup)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: face-encodings
-          path: streamlit/data/encodings_insightface.pkl
-          if-no-files-found: warn
+          python scripts/ci_generate_encodings.py
