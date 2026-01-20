@@ -32,16 +32,16 @@ COPY --from=builder /opt/conda/envs/student_env /opt/conda/envs/student_env
 ENV PATH="/opt/conda/envs/student_env/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
 
+# --- FIX: Create the directory structure BEFORE copying code ---
+# This ensures the download script has a place to write files
+RUN mkdir -p /app/app/streamlit/data
+
 COPY . .
 
-# Copy the Nginx configuration we created
+# Copy the Nginx configuration
 COPY nginx.conf /etc/nginx/nginx.conf
 
-# Create a startup script that:
-# 1. Replaces PORT_PLACEHOLDER with the real Railway PORT
-# 2. Starts FastAPI on 8000
-# 3. Starts Streamlit on 8501
-# 4. Starts Nginx to manage them both
+# Create the startup script
 RUN echo '#!/bin/bash\n\
 sed -i "s/PORT_PLACEHOLDER/$PORT/g" /etc/nginx/nginx.conf\n\
 \n\
