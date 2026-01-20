@@ -69,7 +69,7 @@ def load_encodings() -> Tuple[np.ndarray, List[str]]:
     try:
         with open(ENCODINGS_PATH, "rb") as f:
             data = pickle.load(f)
-        return normalize_encodings(np.array(data["encodings"])), [str(i) for i in data["ids"]]
+        return normalize_encodings(np.array(data["encodings"])), [str(i) for i in data["names"]]
     except Exception as e:
         print(f"Error loading encodings pickle: {e}")
         return np.array([]), []
