@@ -11,24 +11,18 @@ from supabase import create_client
 # -----------------------------
 # 1. Path & Environment Setup
 # -----------------------------
-# Add project root to sys.path so we can import 'app' and 'scripts'
 current_file = Path(__file__).resolve()
-# We move up two levels because main.py is in 'streamlit/' folder
 project_root = current_file.parent.parent 
 sys.path.append(str(project_root))
 
-# Load Secrets (Railway handles these via Environment Variables, 
-# but this keeps local development working)
 env_path = project_root / "secrets.env"
 if env_path.exists():
     load_dotenv(env_path)
 
-# Configuration
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "admin")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-# Initialize Supabase Client
 supabase = None
 if SUPABASE_URL and SUPABASE_KEY:
     try:
@@ -36,9 +30,10 @@ if SUPABASE_URL and SUPABASE_KEY:
     except Exception as e:
         st.error(f"⚠️ Database Connection Error: {e}")
 
-# Import Internal Modules from your 'app' and 'scripts' folders
+# Import Internal Modules
 try:
     from app.face_engine.insightface_engine import verify_face
+    # ✅ CORRECT IMPORT: Pointing to the main CI script
     from scripts.ci_generate_encodings import generate_encodings
 except ImportError as e:
     st.error(f"❌ Critical Import Error: {e}")
@@ -47,24 +42,17 @@ except ImportError as e:
 # -----------------------------
 # 2. Helper Functions
 # -----------------------------
-
 @st.cache_data(ttl=300) 
 def get_student_name(student_id: str) -> str:
-    """Fetches real name from Supabase 'students' table."""
-    if not supabase:
-        return student_id
+    if not supabase: return student_id
     try:
         response = supabase.table("students").select("name").eq("id", student_id).execute()
-        if response.data and len(response.data) > 0:
-            return response.data[0]['name']
-    except Exception as e:
-        print(f"⚠️ Name fetch error: {e}")
+        if response.data: return response.data[0]['name']
+    except Exception: pass
     return student_id 
 
 def add_attendance_record(student_id: str, confidence: float, status: str):
-    """Logs the attendance attempt to Supabase 'attendance_records'."""
-    if not supabase:
-        return
+    if not supabase: return
     data = {
         "student_id": student_id if status == "success" else None,
         "confidence": float(confidence),
@@ -73,7 +61,6 @@ def add_attendance_record(student_id: str, confidence: float, status: str):
     }
     try:
         supabase.table('attendance_records').insert(data).execute()
-        print(f"✅ Logged: {student_id} ({status})")
     except Exception as e:
         print(f"❌ Logging Failed: {e}")
 
@@ -108,7 +95,6 @@ def main():
                     display_name = get_student_name(raw_id)
                     st.balloons()
                     st.success(f"✅ Verified: **{display_name}**")
-                    st.caption(f"ID: {raw_id} | Confidence: {result['confidence']:.2f}")
                     add_attendance_record(raw_id, result['confidence'], "success")
                 else:
                     st.error("⛔ Access Denied: Unknown Person")
@@ -127,15 +113,20 @@ def main():
             
             if st.button("Start Sync & Retrain"):
                 progress_bar = st.progress(0, text="Initializing...")
-                def update_progress_ui(percent, message):
-                    progress_bar.progress(min(max(percent, 0.0), 1.0), text=message)
+                
+                # ✅ WRAPPER FUNCTION: Matches what script expects (percent, text)
+                def update_progress_ui(percent, message="Processing..."):
+                    # Ensure percent is between 0.0 and 1.0
+                    safe_percent = min(max(float(percent), 0.0), 1.0)
+                    progress_bar.progress(safe_percent, text=message)
                 
                 try:
+                    # Pass the wrapper to the script
                     success = generate_encodings(progress_callback=update_progress_ui)
+                    
                     if success:
                         st.success("✅ System updated successfully!")
                         st.cache_resource.clear() 
-                        st.rerun() 
                     else:
                         st.error("❌ Update failed. Check terminal logs.")
                 except Exception as e:

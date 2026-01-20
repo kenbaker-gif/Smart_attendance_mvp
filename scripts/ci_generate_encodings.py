@@ -15,6 +15,7 @@ UPLOAD_PATH = "encodings/" + OUTPUT_FILE
 # --- INIT ---
 load_dotenv("secrets.env")
 
+# Initialize InsightFace (Heavy model, so we do it globally)
 app = FaceAnalysis(name='buffalo_s', providers=['CPUExecutionProvider'])
 app.prepare(ctx_id=0, det_size=(640, 640))
 
@@ -24,62 +25,66 @@ def get_face_embedding(img_bgr):
         return None
     return sorted(faces, key=lambda x: x.bbox[2] * x.bbox[3], reverse=True)[0].embedding
 
-def main():
-    print(f"🚀 Starting Recursive Generation in bucket: '{BUCKET_NAME}'...", flush=True)
+# ✅ UPDATED: Now accepts 'progress_callback'
+def generate_encodings(progress_callback=None):
+    print(f"🚀 Starting Generation in bucket: '{BUCKET_NAME}'...", flush=True)
     
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
     
     if not url or not key:
         print("❌ Error: Supabase credentials missing.", flush=True)
-        sys.exit(1)
+        return False
         
     try:
         supabase = create_client(url, key)
     except Exception as e:
         print(f"❌ Connection Failed: {e}", flush=True)
-        sys.exit(1)
+        return False
 
-    # 1. Get list of Folders (Student IDs)
+    # 1. Get list of Folders
     print(f"📂 Scanning root of '{BUCKET_NAME}'...", flush=True)
     try:
         root_items = supabase.storage.from_(BUCKET_NAME).list()
     except Exception as e:
         print(f"❌ Error accessing bucket: {e}", flush=True)
-        return
+        return False
 
     known_encodings = []
     known_names = []
     
-    # 2. Loop through each folder
-    for item in root_items:
-        folder_name = item['name']
-        
-        # Skip the 'encodings' folder and any loose files in root
-        if folder_name == 'encodings' or folder_name.startswith('.'):
-            continue
-            
-        # Heuristic: If it has an extension (like .pkl or .jpg), it's a file, not a student folder. Skip it.
-        if '.' in folder_name:
-            continue
+    # Filter for valid student folders only
+    valid_folders = [item for item in root_items 
+                     if not item['name'].startswith('.') 
+                     and item['name'] != 'encodings' 
+                     and '.' not in item['name']]
+    
+    total_students = len(valid_folders)
+    print(f"🔍 Found {total_students} student folders.", flush=True)
 
-        student_id = folder_name
+    # 2. Loop through each folder
+    for i, item in enumerate(valid_folders):
+        
+        # ✅ UPDATE STREAMLIT PROGRESS BAR (If provided)
+        if progress_callback:
+            # Calculate percentage (0.0 to 1.0)
+            percent = (i + 1) / total_students
+            # Update the bar with a message
+            progress_callback(percent, f"Processing {item['name']}...")
+
+        student_id = item['name']
         print(f"   📂 Checking Student: {student_id}...", end="", flush=True)
 
         try:
-            # List files INSIDE this student's folder
-            student_files = supabase.storage.from_(BUCKET_NAME).list(folder_name)
+            student_files = supabase.storage.from_(BUCKET_NAME).list(student_id)
             
-            # Find the first valid image file
             found_image = False
             for file in student_files:
                 file_name = file['name']
                 if file_name.startswith('.'): continue
                 
-                # Construct path: "2400102415/1.jpg"
-                full_path = f"{folder_name}/{file_name}"
+                full_path = f"{student_id}/{file_name}"
                 
-                # Download
                 try:
                     file_data = supabase.storage.from_(BUCKET_NAME).download(full_path)
                     img_arr = np.frombuffer(file_data, np.uint8)
@@ -90,15 +95,15 @@ def main():
                     emb = get_face_embedding(img)
                     if emb is not None:
                         known_encodings.append(emb)
-                        known_names.append(student_id) # Use the FOLDER NAME as ID
+                        known_names.append(student_id)
                         print(f" ✅ Encoded", flush=True)
                         found_image = True
-                        break # Stop after finding one valid face for this student
-                except Exception as inner_e:
+                        break 
+                except Exception:
                     continue
 
             if not found_image:
-                print(f" ⚠️ No valid face found in folder", flush=True)
+                print(f" ⚠️ No valid face found", flush=True)
 
         except Exception as e:
             print(f" ❌ Error accessing folder: {e}", flush=True)
@@ -106,7 +111,7 @@ def main():
     # 3. Save & Upload
     if not known_encodings:
         print("❌ No valid encodings generated.", flush=True)
-        sys.exit(1)
+        return False
 
     print("💾 Saving pickle file locally...", flush=True)
     data = {"encodings": known_encodings, "names": known_names}
@@ -123,9 +128,10 @@ def main():
                 file_options={"cache-control": "3600", "upsert": "true"}
             )
         print("🎉 SUCCESS: Encodings updated!", flush=True)
+        return True
     except Exception as e:
         print(f"❌ Upload Failed: {e}", flush=True)
-        sys.exit(1)
+        return False
 
 if __name__ == "__main__":
-    main()
+    generate_encodings()
