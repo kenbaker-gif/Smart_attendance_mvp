@@ -39,7 +39,7 @@ if SUPABASE_URL and SUPABASE_KEY:
 # Import Internal Modules from your 'app' and 'scripts' folders
 try:
     from app.face_engine.insightface_engine import verify_face
-    from scripts.streamlit_app_regen import generate_encodings
+    from scripts.ci_generate_encodings import generate_encodings
 except ImportError as e:
     st.error(f"❌ Critical Import Error: {e}")
     st.stop()
