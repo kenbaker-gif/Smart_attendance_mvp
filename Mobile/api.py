@@ -45,7 +45,6 @@ try:
     from app.face_engine.insightface_engine import verify_face
 except ImportError:
     print("CRITICAL: Face engine could not load. Check sys.path.")
-    # We don't exit here so the server can at least start and log the error
     pass
 
 # --- HELPER FUNCTIONS ---
@@ -79,7 +78,7 @@ def health_check():
 @app.post("/verify")
 async def verify_image(file: UploadFile = File(...)):
     """
-    Receives an image file, processes it, and returns the student identity.
+    Receives an image file, processes it, and returns the student identity + coordinates.
     """
     # 1. Read Image
     try:
@@ -96,18 +95,25 @@ async def verify_image(file: UploadFile = File(...)):
     try:
         result = verify_face(img_bgr)
     except Exception as e:
-        # Fallback if the engine crashes (e.g., missing database)
         print(f"Engine Error: {e}")
         return {"status": "error", "message": "Server Processing Error", "confidence": 0.0}
 
-    # 3. Handle Result Safely (Fixes the KeyError crash)
+    # 3. Handle Result
     if not result:
         return {"status": "failed", "message": "No face detected", "confidence": 0.0}
 
-    # Extract values safely using .get()
+    # Extract values safely
     confidence = result.get("confidence", 0.0)
     status = result.get("status", "failed")
     message = result.get("message", "Unknown Identity")
+
+    # --- NEW: Extract Coordinates for Flutter Overlay ---
+    # We must convert numpy arrays to lists so JSON doesn't crash
+    bbox_raw = result.get("bbox")
+    kps_raw = result.get("kps")
+    
+    bbox_list = bbox_raw.tolist() if bbox_raw is not None else []
+    kps_list = kps_raw.tolist() if kps_raw is not None else []
 
     if status == "success":
         student_id = result.get("student_id", "Unknown")
@@ -120,7 +126,10 @@ async def verify_image(file: UploadFile = File(...)):
             "status": "success",
             "student_id": student_id,
             "name": real_name,
-            "confidence": round(confidence, 2)
+            "confidence": round(confidence, 2),
+            # ✅ Send coordinates to phone
+            "bbox": bbox_list,
+            "kps": kps_list
         }
     else:
         # Log failure safely
@@ -128,5 +137,8 @@ async def verify_image(file: UploadFile = File(...)):
         return {
             "status": "failed",
             "message": message,
-            "confidence": round(confidence, 2)
+            "confidence": round(confidence, 2),
+            # ✅ Send coordinates (so we can draw Red Box)
+            "bbox": bbox_list,
+            "kps": kps_list
         }
