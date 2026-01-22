@@ -193,10 +193,15 @@ async def verify_image(file: UploadFile = File(...)):
     message = result.get("message", "Unknown Identity")
 
     bbox_raw = result.get("bbox")
+    # --- FIXED SECTION ---
+    # The engine already returns standard Lists, so we don't need .tolist()
+    bbox_raw = result.get("bbox")
     kps_raw = result.get("kps")
     
-    bbox_list = bbox_raw.tolist() if bbox_raw is not None else []
-    kps_list = kps_raw.tolist() if kps_raw is not None else []
+    # Just check if they exist, otherwise use empty list
+    bbox_list = bbox_raw if bbox_raw is not None else []
+    kps_list = kps_raw if kps_raw is not None else []
+    # ---------------------
 
     if status == "success":
         student_id = result.get("student_id", "Unknown")
