@@ -6,7 +6,8 @@ import cv2
 import numpy as np
 import os
 import sys
-import pickle  # ✅ Added
+import pickle
+import time  # ✅ Added for Lazy Check
 from pathlib import Path
 from dotenv import load_dotenv
 from supabase import create_client
@@ -19,6 +20,9 @@ sys.path.append(str(project_root))
 
 env_path = project_root / "secrets.env"
 load_dotenv(env_path)
+
+# --- GLOBAL VARIABLES ---
+last_update_time = 0  # ✅ Tracks when we last synced with Supabase
 
 # --- 2. SUPABASE ---
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -38,12 +42,14 @@ except ImportError:
     def update_face_bank(data): pass
     pass
 
-# --- 4. AUTO-REFRESH LOGIC ---
+# --- 4. DATA LOADING LOGIC (Updated for Lazy Check) ---
 async def fetch_and_update_encodings():
     """Downloads master pickle file from Storage."""
+    global last_update_time  # ✅ Update the global timer
+
     if not supabase: return
 
-    print("🔄 Auto-Refresh: Checking Storage for master encoding file...")
+    print("🔄 Refreshing: Checking Storage for master encoding file...")
     try:
         files_list = supabase.storage.from_("raw_faces").list("encodings")
         
@@ -54,7 +60,7 @@ async def fetch_and_update_encodings():
                 break
         
         if not target_file:
-            print("⚠️ Auto-Refresh: No .pkl file found.")
+            print("⚠️ Refresh: No .pkl file found.")
             return
 
         print(f"⬇️ Downloading master file: {target_file}...")
@@ -68,25 +74,26 @@ async def fetch_and_update_encodings():
             encodings = data["encodings"]
             # Map IDs to Encodings
             new_knowledge_base = {str(name): enc for name, enc in zip(names, encodings)}
+            
             update_face_bank(new_knowledge_base)
-            print(f"✅ Loaded {len(new_knowledge_base)} students.")
+            
+            # ✅ Reset the timer so we don't check again for 5 mins
+            last_update_time = time.time()
+            print(f"✅ Loaded {len(new_knowledge_base)} students. Timer reset.")
         else:
             print(f"❌ Format Error in {target_file}")
 
     except Exception as e:
-        print(f"❌ Auto-Refresh Error: {e}")
-
-async def run_periodic_refresh():
-    while True:
-        await asyncio.sleep(300)
-        await fetch_and_update_encodings()
+        print(f"❌ Refresh Error: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # --- STARTUP ---
     print("🚀 Server Starting...")
-    await fetch_and_update_encodings()
-    asyncio.create_task(run_periodic_refresh())
+    await fetch_and_update_encodings() # Always load on "Cold Start"
+    # ❌ Background loop REMOVED to save resources
     yield
+    # --- SHUTDOWN ---
     print("🛑 Server Shutting Down...")
 
 # --- 5. API APP ---
@@ -105,7 +112,6 @@ def get_student_name(student_id: str) -> str:
     """Fetches real name from Supabase DB using the ID."""
     if not supabase: return student_id
     try:
-        # ✅ Ensure 'name' matches your actual DB column (e.g. full_name)
         resp = supabase.table("students").select("name").eq("id", student_id).execute()
         if resp.data: return resp.data[0]['name']
     except: pass
@@ -121,8 +127,9 @@ def log_attendance(student_id: str, confidence: float, status: str):
     }
     try:
         supabase.table('attendance_records').insert(data).execute()
+        print(f"📝 Logged: {student_id} ({status})")
     except Exception as e:
-        print(f"Log Error: {e}")
+        print(f"❌ Log Error: {e}")
 
 # --- 7. ENDPOINTS ---
 @app.get("/")
@@ -136,6 +143,13 @@ async def manual_refresh():
 
 @app.post("/verify")
 async def verify_image(file: UploadFile = File(...)):
+    global last_update_time
+    
+    # ✅ LAZY CHECK: Is data older than 5 minutes (300 seconds)?
+    if time.time() - last_update_time > 300:
+        print("⏰ Data stale (>5 mins). Refreshing before verification...")
+        await fetch_and_update_encodings()
+
     # Read Image
     try:
         contents = await file.read()
@@ -159,7 +173,6 @@ async def verify_image(file: UploadFile = File(...)):
     status = result.get("status", "failed")
     message = result.get("message", "Unknown Identity")
     
-    # ✅ FIX: No .tolist() needed
     bbox_raw = result.get("bbox")
     kps_raw = result.get("kps")
     bbox_list = bbox_raw if bbox_raw is not None else []
@@ -167,7 +180,6 @@ async def verify_image(file: UploadFile = File(...)):
 
     if status == "success":
         student_id = result.get("student_id", "Unknown")
-        # ✅ Fetch Name
         real_name = get_student_name(student_id)
         
         log_attendance(student_id, confidence, "success")
@@ -175,7 +187,7 @@ async def verify_image(file: UploadFile = File(...)):
         return {
             "status": "success",
             "student_id": student_id,
-            "name": real_name, # Returns "John Doe" instead of "12345"
+            "name": real_name,
             "confidence": round(confidence, 2),
             "bbox": bbox_list,
             "kps": kps_list
