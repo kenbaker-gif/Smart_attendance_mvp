@@ -47,17 +47,17 @@ async def fetch_and_update_encodings():
 
     print("🔄 Auto-Refresh: Fetching student list from Supabase...")
     try:
-        # Fetch ID and Embedding columns
-        resp = supabase.table("students").select("student_id, embedding").execute()
+        # ✅ FIX 1: Selecting 'id' instead of 'student_id'
+        resp = supabase.table("students").select("id, embedding").execute()
         data = resp.data
         
         if data:
-            # Convert to the format your engine expects (e.g., Dictionary)
-            # { "STUDENT_ID": [0.123, 0.456, ...] }
             new_knowledge_base = {}
             for student in data:
                 if student.get('embedding'):
-                    s_id = student.get('student_id')
+                    # ✅ FIX 2: Using 'id' here as well
+                    s_id = student.get('id') 
+                    
                     # Ensure embedding is a list (Supabase returns JSON/List)
                     new_knowledge_base[s_id] = student['embedding']
             
