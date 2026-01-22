@@ -39,36 +39,64 @@ except ImportError:
     pass
 
 # --- 6. AUTO-REFRESH LOGIC (NEW) ---
+import pickle  # ✅ Make sure to import this at the top of your file
+
 async def fetch_and_update_encodings():
-    """Fetches embeddings from Supabase and pushes them to the Engine."""
+    """Fetches encoding FILES from Supabase Storage and pushes them to the Engine."""
     if not supabase: 
         print("⚠️ Auto-Refresh: Supabase not connected.")
         return
 
-    print("🔄 Auto-Refresh: Fetching student list from Supabase...")
+    print("🔄 Auto-Refresh: Downloading encodings from Storage Bucket...")
+    
+    new_knowledge_base = {}
+    
     try:
-        # ✅ FIX 1: Selecting 'id' instead of 'student_id'
-        resp = supabase.table("students").select("id, embedding").execute()
-        data = resp.data
+        # 1. List all files in the 'encodings' folder
+        # Note: The bucket is "raw_faces", the folder is "encodings"
+        files_list = supabase.storage.from_("raw_faces").list("encodings")
         
-        if data:
-            new_knowledge_base = {}
-            for student in data:
-                if student.get('embedding'):
-                    # ✅ FIX 2: Using 'id' here as well
-                    s_id = student.get('id') 
-                    
-                    # Ensure embedding is a list (Supabase returns JSON/List)
-                    new_knowledge_base[s_id] = student['embedding']
+        if not files_list:
+            print("⚠️ Auto-Refresh: No files found in 'raw_faces/encodings'.")
+            return
+
+        print(f"📂 Found {len(files_list)} files. Processing...")
+
+        # 2. Loop through each file and download it
+        for file_obj in files_list:
+            filename = file_obj.get('name')
             
-            # Update the Engine's memory
+            # Skip hidden system files or empty names
+            if not filename or filename.startswith('.'):
+                continue
+            
+            try:
+                # 3. Download the file bytes
+                # Path format: "folder/filename.ext"
+                file_path = f"encodings/{filename}"
+                print(f"   ⬇️ Downloading {filename}...")
+                
+                data_bytes = supabase.storage.from_("raw_faces").download(file_path)
+                
+                # 4. Convert Bytes back to Numpy Array (Unpickle)
+                encoding = pickle.loads(data_bytes)
+                
+                # 5. Use the Filename as the Student ID (e.g., "101.pkl" -> "101")
+                # Remove the file extension (.pkl, .pickle, .npy)
+                student_id = os.path.splitext(filename)[0]
+                
+                new_knowledge_base[student_id] = encoding
+                
+            except Exception as e:
+                print(f"   ❌ Error processing {filename}: {e}")
+
+        # 6. Update the Engine
+        if new_knowledge_base:
             update_face_bank(new_knowledge_base)
-            print(f"✅ Auto-Refresh: Successfully loaded {len(new_knowledge_base)} students.")
-        else:
-            print("⚠️ Auto-Refresh: No students found in database.")
-            
+            print(f"✅ Auto-Refresh: Successfully loaded {len(new_knowledge_base)} students from Storage.")
+        
     except Exception as e:
-        print(f"❌ Auto-Refresh Error: {e}")
+        print(f"❌ Auto-Refresh Critical Error: {e}")
 
 async def run_periodic_refresh():
     """Background task that runs every 5 minutes"""
