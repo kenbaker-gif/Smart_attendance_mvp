@@ -17,9 +17,11 @@ ENCODINGS_PATH = DATA_DIR / "encodings/encodings_insightface.pkl"
 DEFAULT_THRESHOLD = 0.5
 
 # -----------------------------
-# AI Engine
+# GLOBAL MEMORY (RAM)
 # -----------------------------
 _app = None
+_CACHE_ENCODINGS = np.array([])
+_CACHE_IDS = []
 
 def get_insightface(det_size=(640, 640), model_name="buffalo_s"):
     global _app
@@ -31,6 +33,7 @@ def get_insightface(det_size=(640, 640), model_name="buffalo_s"):
     except ImportError:
         raise ImportError("Please run: pip install insightface onnxruntime")
 
+    # Initialize InsightFace
     _app = FaceAnalysis(name=model_name, providers=["CPUExecutionProvider"])
     _app.prepare(ctx_id=-1, det_size=det_size)
     return _app
@@ -41,61 +44,81 @@ def normalize_encodings(vectors: np.ndarray) -> np.ndarray:
     norms[norms == 0] = 1
     return vectors / norms
 
-def load_encodings() -> Tuple[np.ndarray, List[str]]:
+# --- NEW FUNCTION: Called by API to inject new data ---
+def update_face_bank(new_data_dict: dict):
     """
-    Loads encodings from disk. 
-    If missing, attempts to download from Supabase first.
+    Updates the in-memory cache with new data from Supabase.
+    Args:
+        new_data_dict: { 'student_id': [0.123, 0.456, ...] }
     """
-    # 1. Auto-Recovery: If file missing, try to download from Cloud
-    if not ENCODINGS_PATH.exists():
-        print("⚠️ Encodings file missing locally. Attempting cloud sync...")
-        try:
-            # Lazy import to avoid circular dependency issues
-            from app.utils.supabase_utils import download_encodings_from_supabase
-            
-            # We need to load env vars here to ensure connection works
-            from dotenv import load_dotenv
-            load_dotenv(APP_DIR.parent / "secrets.env")
-            
-            # Attempt download
-            download_encodings_from_supabase(str(ENCODINGS_PATH))
-        except Exception as e:
-            print(f"❌ Cloud download failed: {e}")
+    global _CACHE_ENCODINGS, _CACHE_IDS
+    
+    if not new_data_dict:
+        print("⚠️ Engine: Received empty data update.")
+        return
 
-    # 2. Load from Disk
-    if not ENCODINGS_PATH.exists():
-        return np.array([]), []
-
+    print(f"🧠 Engine: Updating memory with {len(new_data_dict)} faces...")
+    
     try:
-        with open(ENCODINGS_PATH, "rb") as f:
-            data = pickle.load(f)
-        return normalize_encodings(np.array(data["encodings"])), [str(i) for i in data["names"]]
+        # 1. Separate Keys (IDs) and Values (Embeddings)
+        ids = list(new_data_dict.keys())
+        embeddings = list(new_data_dict.values())
+        
+        # 2. Convert to Numpy Array (float32 is faster)
+        emb_array = np.array(embeddings, dtype=np.float32)
+        
+        # 3. Normalize immediately (Crucial for Cosine Similarity)
+        _CACHE_ENCODINGS = normalize_encodings(emb_array)
+        _CACHE_IDS = ids
+        
+        print(f"✅ Engine: Memory Updated! Holding {len(_CACHE_IDS)} students.")
+        
     except Exception as e:
-        print(f"Error loading encodings pickle: {e}")
-        return np.array([]), []
+        print(f"❌ Engine Update Error: {e}")
 
 def verify_face(img_bgr: np.ndarray, threshold: float = DEFAULT_THRESHOLD) -> Optional[dict]:
-    known_encs, known_ids = load_encodings()
+    # 1. USE RAM CACHE INSTEAD OF DISK
+    global _CACHE_ENCODINGS, _CACHE_IDS
     
-    if known_encs.size == 0:
-        return {"status": "error", "message": "Database empty. Please run Sync in Admin Panel."}
+    # Safety Check: Is memory empty?
+    if _CACHE_ENCODINGS.size == 0:
+        return {"status": "error", "message": "Server is warming up... Try again in 10s."}
 
+    # 2. Get AI Model
     app = get_insightface()
     faces = app.get(img_bgr)
     
     if not faces:
         return None
 
-    # Get largest face
+    # 3. Get largest face
     face = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0]) * (f.bbox[3]-f.bbox[1]))
     captured_emb = face.embedding / (np.linalg.norm(face.embedding) + 1e-10)
 
-    # Calculate distances
-    dists = 1.0 - np.dot(known_encs, captured_emb)
-    idx = np.argmin(dists)
-    score = float(1.0 - dists[idx])
+    # 4. Compare with Memory (Vectorized Math)
+    # Cosine Similarity: 1.0 = Match, 0.0 = No Match
+    dists = 1.0 - np.dot(_CACHE_ENCODINGS, captured_emb)
+    idx = np.argmin(dists)     # Find index of smallest distance (best match)
+    score = float(1.0 - dists[idx]) # Convert distance to confidence score
+
+    # 5. Prepare Coordinates (for Flutter Overlay)
+    # Convert numpy int32 to standard python int/list
+    bbox = face.bbox.astype(int).tolist()
+    kps = face.kps.astype(int).tolist()
 
     if dists[idx] < threshold:
-        return {"status": "success", "student_id": known_ids[idx], "confidence": score}
+        return {
+            "status": "success", 
+            "student_id": _CACHE_IDS[idx], 
+            "confidence": score,
+            "bbox": bbox,
+            "kps": kps
+        }
     else:
-        return {"status": "failed", "student_id": "Unknown", "confidence": score}
+        return {
+            "status": "failed", 
+            "student_id": "Unknown", 
+            "confidence": score,
+            "bbox": bbox, # Still send box so we can draw RED overlay
+            "kps": kps
+        }

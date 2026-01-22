@@ -1,3 +1,5 @@
+import asyncio
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from pydantic import BaseModel
 import cv2
@@ -10,7 +12,6 @@ from supabase import create_client
 from fastapi.middleware.cors import CORSMiddleware
 
 # --- 1. PATH SETUP (CRITICAL) ---
-# Ensure we can find the 'app' folder from the project root
 current_file = Path(__file__).resolve()
 project_root = current_file.parent.parent
 sys.path.append(str(project_root))
@@ -18,19 +19,7 @@ sys.path.append(str(project_root))
 env_path = project_root / "secrets.env"
 load_dotenv(env_path)
 
-# --- 2. INITIALIZE API ---
-app = FastAPI(title="Attendance API")
-
-# --- 3. ADD MIDDLEWARE ---
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# --- 4. SUPABASE SETUP ---
+# --- 4. SUPABASE SETUP (Moved up so it's available for lifespan) ---
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase = None
@@ -42,16 +31,80 @@ if SUPABASE_URL and SUPABASE_KEY:
 
 # --- 5. IMPORT ENGINE ---
 try:
-    from app.face_engine.insightface_engine import verify_face
+    # We import the verification function AND the update function
+    from app.face_engine.insightface_engine import verify_face, update_face_bank 
 except ImportError:
     print("CRITICAL: Face engine could not load. Check sys.path.")
+    def update_face_bank(data): pass # Placeholder to prevent crash if missing
     pass
+
+# --- 6. AUTO-REFRESH LOGIC (NEW) ---
+async def fetch_and_update_encodings():
+    """Fetches embeddings from Supabase and pushes them to the Engine."""
+    if not supabase: 
+        print("⚠️ Auto-Refresh: Supabase not connected.")
+        return
+
+    print("🔄 Auto-Refresh: Fetching student list from Supabase...")
+    try:
+        # Fetch ID and Embedding columns
+        resp = supabase.table("students").select("student_id, embedding").execute()
+        data = resp.data
+        
+        if data:
+            # Convert to the format your engine expects (e.g., Dictionary)
+            # { "STUDENT_ID": [0.123, 0.456, ...] }
+            new_knowledge_base = {}
+            for student in data:
+                if student.get('embedding'):
+                    s_id = student.get('student_id')
+                    # Ensure embedding is a list (Supabase returns JSON/List)
+                    new_knowledge_base[s_id] = student['embedding']
+            
+            # Update the Engine's memory
+            update_face_bank(new_knowledge_base)
+            print(f"✅ Auto-Refresh: Successfully loaded {len(new_knowledge_base)} students.")
+        else:
+            print("⚠️ Auto-Refresh: No students found in database.")
+            
+    except Exception as e:
+        print(f"❌ Auto-Refresh Error: {e}")
+
+async def run_periodic_refresh():
+    """Background task that runs every 5 minutes"""
+    while True:
+        await asyncio.sleep(300) # Wait 300 seconds (5 minutes)
+        await fetch_and_update_encodings()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- STARTUP ---
+    print("🚀 Server Starting: Loading Data...")
+    await fetch_and_update_encodings() # Load immediately
+    asyncio.create_task(run_periodic_refresh()) # Start background timer
+    
+    yield # App runs here
+    
+    # --- SHUTDOWN ---
+    print("🛑 Server Shutting Down...")
+
+# --- 2. INITIALIZE API (With Lifespan) ---
+app = FastAPI(title="Attendance API", lifespan=lifespan)
+
+# --- 3. ADD MIDDLEWARE ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- HELPER FUNCTIONS ---
 def get_student_name(student_id: str) -> str:
     if not supabase: return student_id
     try:
-        resp = supabase.table("students").select("name").eq("id", student_id).execute()
+        resp = supabase.table("students").select("name").eq("student_id", student_id).execute()
         if resp.data: return resp.data[0]['name']
     except: pass
     return student_id
@@ -75,11 +128,14 @@ def log_attendance(student_id: str, confidence: float, status: str):
 def health_check():
     return {"status": "online", "service": "Face Recognition API"}
 
+# New Endpoint to force refresh immediately manually
+@app.post("/refresh")
+async def manual_refresh():
+    await fetch_and_update_encodings()
+    return {"status": "success", "message": "Database re-synced"}
+
 @app.post("/verify")
 async def verify_image(file: UploadFile = File(...)):
-    """
-    Receives an image file, processes it, and returns the student identity + coordinates.
-    """
     # 1. Read Image
     try:
         contents = await file.read()
@@ -102,13 +158,10 @@ async def verify_image(file: UploadFile = File(...)):
     if not result:
         return {"status": "failed", "message": "No face detected", "confidence": 0.0}
 
-    # Extract values safely
     confidence = result.get("confidence", 0.0)
     status = result.get("status", "failed")
     message = result.get("message", "Unknown Identity")
 
-    # --- NEW: Extract Coordinates for Flutter Overlay ---
-    # We must convert numpy arrays to lists so JSON doesn't crash
     bbox_raw = result.get("bbox")
     kps_raw = result.get("kps")
     
@@ -118,8 +171,6 @@ async def verify_image(file: UploadFile = File(...)):
     if status == "success":
         student_id = result.get("student_id", "Unknown")
         real_name = get_student_name(student_id)
-
-        # Log it
         log_attendance(student_id, confidence, "success")
 
         return {
@@ -127,18 +178,15 @@ async def verify_image(file: UploadFile = File(...)):
             "student_id": student_id,
             "name": real_name,
             "confidence": round(confidence, 2),
-            # ✅ Send coordinates to phone
             "bbox": bbox_list,
             "kps": kps_list
         }
     else:
-        # Log failure safely
         log_attendance("Unknown", confidence, "failed")
         return {
             "status": "failed",
             "message": message,
             "confidence": round(confidence, 2),
-            # ✅ Send coordinates (so we can draw Red Box)
             "bbox": bbox_list,
             "kps": kps_list
         }
