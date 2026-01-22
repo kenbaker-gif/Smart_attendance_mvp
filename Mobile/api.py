@@ -41,60 +41,62 @@ except ImportError:
 # --- 6. AUTO-REFRESH LOGIC (NEW) ---
 import pickle  # ✅ Make sure to import this at the top of your file
 
+import pickle # ✅ Ensure this is imported at the top
+
 async def fetch_and_update_encodings():
-    """Fetches encoding FILES from Supabase Storage and pushes them to the Engine."""
+    """Downloads the MASTER encoding file from Storage and updates the Engine."""
     if not supabase: 
         print("⚠️ Auto-Refresh: Supabase not connected.")
         return
 
-    print("🔄 Auto-Refresh: Downloading encodings from Storage Bucket...")
-    
-    new_knowledge_base = {}
+    print("🔄 Auto-Refresh: Checking Storage for master encoding file...")
     
     try:
-        # 1. List all files in the 'encodings' folder
-        # Note: The bucket is "raw_faces", the folder is "encodings"
+        # 1. Find the file name (We don't hardcode it, just in case it changes)
         files_list = supabase.storage.from_("raw_faces").list("encodings")
         
-        if not files_list:
-            print("⚠️ Auto-Refresh: No files found in 'raw_faces/encodings'.")
+        # Look for the first file ending in .pkl or .pickle
+        target_file = None
+        for f in files_list:
+            if f['name'].endswith('.pkl') or f['name'].endswith('.pickle'):
+                target_file = f['name']
+                break
+        
+        if not target_file:
+            print("⚠️ Auto-Refresh: No .pkl file found in 'raw_faces/encodings'.")
             return
 
-        print(f"📂 Found {len(files_list)} files. Processing...")
+        print(f"⬇️ Downloading master file: {target_file}...")
 
-        # 2. Loop through each file and download it
-        for file_obj in files_list:
-            filename = file_obj.get('name')
-            
-            # Skip hidden system files or empty names
-            if not filename or filename.startswith('.'):
-                continue
-            
-            try:
-                # 3. Download the file bytes
-                # Path format: "folder/filename.ext"
-                file_path = f"encodings/{filename}"
-                print(f"   ⬇️ Downloading {filename}...")
-                
-                data_bytes = supabase.storage.from_("raw_faces").download(file_path)
-                
-                # 4. Convert Bytes back to Numpy Array (Unpickle)
-                encoding = pickle.loads(data_bytes)
-                
-                # 5. Use the Filename as the Student ID (e.g., "101.pkl" -> "101")
-                # Remove the file extension (.pkl, .pickle, .npy)
-                student_id = os.path.splitext(filename)[0]
-                
-                new_knowledge_base[student_id] = encoding
-                
-            except Exception as e:
-                print(f"   ❌ Error processing {filename}: {e}")
-
-        # 6. Update the Engine
-        if new_knowledge_base:
-            update_face_bank(new_knowledge_base)
-            print(f"✅ Auto-Refresh: Successfully loaded {len(new_knowledge_base)} students from Storage.")
+        # 2. Download the file into memory (RAM)
+        file_path = f"encodings/{target_file}"
+        data_bytes = supabase.storage.from_("raw_faces").download(file_path)
         
+        # 3. Open the file (Unpickle)
+        # Expected structure: { "names": ["id1", "id2"], "encodings": [[...], [...]] }
+        data = pickle.loads(data_bytes)
+        
+        # 4. Convert Data Structure
+        # The Engine wants: { "ID": [Vector] }
+        # The File has: Lists
+        
+        if "names" in data and "encodings" in data:
+            names = data["names"]
+            encodings = data["encodings"]
+            
+            # Zip them together into a Dictionary
+            new_knowledge_base = {
+                str(name): enc 
+                for name, enc in zip(names, encodings)
+            }
+            
+            # 5. Send to Engine
+            update_face_bank(new_knowledge_base)
+            print(f"✅ Auto-Refresh: Successfully unpacked {len(new_knowledge_base)} students from {target_file}.")
+            
+        else:
+            print(f"❌ Error: {target_file} has wrong format. Keys found: {data.keys()}")
+
     except Exception as e:
         print(f"❌ Auto-Refresh Critical Error: {e}")
 
