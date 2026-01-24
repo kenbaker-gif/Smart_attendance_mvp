@@ -7,7 +7,7 @@ import numpy as np
 import os
 import sys
 import pickle
-import time  # ✅ Added for Lazy Check
+import time  # ✅ Needed for timers
 from pathlib import Path
 from dotenv import load_dotenv
 from supabase import create_client
@@ -22,7 +22,8 @@ env_path = project_root / "secrets.env"
 load_dotenv(env_path)
 
 # --- GLOBAL VARIABLES ---
-last_update_time = 0  # ✅ Tracks when we last synced with Supabase
+last_update_time = 0      # Tracks when we last checked Supabase
+last_file_version = ""    # ✅ Tracks the specific version of the file we have in RAM
 
 # --- 2. SUPABASE ---
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -42,28 +43,47 @@ except ImportError:
     def update_face_bank(data): pass
     pass
 
-# --- 4. DATA LOADING LOGIC (Updated for Lazy Check) ---
+# --- 4. SMART DATA LOADING LOGIC ---
 async def fetch_and_update_encodings():
-    """Downloads master pickle file from Storage."""
-    global last_update_time  # ✅ Update the global timer
+    """
+    Checks Supabase Storage metadata. 
+    Only downloads the .pkl file if it is newer than what we have in RAM.
+    """
+    global last_update_time
+    global last_file_version  # We need to read/write this global
 
     if not supabase: return
 
-    print("🔄 Refreshing: Checking Storage for master encoding file...")
+    print("🔄 Smart-Refresh: Checking if file has changed in Storage...")
     try:
+        # 1. List files to peek at metadata (timestamp/id)
         files_list = supabase.storage.from_("raw_faces").list("encodings")
         
         target_file = None
+        target_metadata = None
+        
         for f in files_list:
             if f['name'].endswith('.pkl') or f['name'].endswith('.pickle'):
                 target_file = f['name']
+                target_metadata = f
                 break
         
         if not target_file:
             print("⚠️ Refresh: No .pkl file found.")
             return
 
-        print(f"⬇️ Downloading master file: {target_file}...")
+        # 2. CHECK: Compare cloud version vs local version
+        # We use 'updated_at' or 'id' as the version signature
+        current_version = target_metadata.get('updated_at', '') # timestamp string
+        
+        if current_version and current_version == last_file_version:
+            print("✅ File is unchanged. Skipping download.")
+            # We still reset the timer so we don't check again for another 5 mins
+            last_update_time = time.time()
+            return
+
+        # 3. If versions don't match, Download!
+        print(f"⬇️ New version found ({current_version}). Downloading {target_file}...")
         file_path = f"encodings/{target_file}"
         data_bytes = supabase.storage.from_("raw_faces").download(file_path)
         
@@ -72,14 +92,17 @@ async def fetch_and_update_encodings():
         if "names" in data and "encodings" in data:
             names = data["names"]
             encodings = data["encodings"]
-            # Map IDs to Encodings
+            
             new_knowledge_base = {str(name): enc for name, enc in zip(names, encodings)}
             
+            # Update the AI Engine
             update_face_bank(new_knowledge_base)
             
-            # ✅ Reset the timer so we don't check again for 5 mins
+            # ✅ Update our version trackers
+            last_file_version = current_version
             last_update_time = time.time()
-            print(f"✅ Loaded {len(new_knowledge_base)} students. Timer reset.")
+            
+            print(f"✅ Loaded {len(new_knowledge_base)} students. RAM Updated.")
         else:
             print(f"❌ Format Error in {target_file}")
 
@@ -91,7 +114,6 @@ async def lifespan(app: FastAPI):
     # --- STARTUP ---
     print("🚀 Server Starting...")
     await fetch_and_update_encodings() # Always load on "Cold Start"
-    # ❌ Background loop REMOVED to save resources
     yield
     # --- SHUTDOWN ---
     print("🛑 Server Shutting Down...")
@@ -138,6 +160,7 @@ def health_check():
 
 @app.post("/refresh")
 async def manual_refresh():
+    # Force a refresh regardless of timer
     await fetch_and_update_encodings()
     return {"status": "success"}
 
@@ -145,9 +168,10 @@ async def manual_refresh():
 async def verify_image(file: UploadFile = File(...)):
     global last_update_time
     
-    # ✅ LAZY CHECK: Is data older than 5 minutes (300 seconds)?
+    # ✅ LAZY CHECK: Is the 5-minute timer up?
+    # If yes, we call fetch_and_update, which will check the file version.
     if time.time() - last_update_time > 300:
-        print("⏰ Data stale (>5 mins). Refreshing before verification...")
+        print("⏰ Timer expired (>5 mins). Checking storage...")
         await fetch_and_update_encodings()
 
     # Read Image
