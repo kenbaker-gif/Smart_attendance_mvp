@@ -1,13 +1,14 @@
 import asyncio
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+# ✅ 1. ADD BackgroundTasks TO IMPORTS
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, BackgroundTasks
 from pydantic import BaseModel
 import cv2
 import numpy as np
 import os
 import sys
 import pickle
-import time  # ✅ Needed for timers
+import time
 from pathlib import Path
 from dotenv import load_dotenv
 from supabase import create_client
@@ -22,8 +23,8 @@ env_path = project_root / "secrets.env"
 load_dotenv(env_path)
 
 # --- GLOBAL VARIABLES ---
-last_update_time = 0      # Tracks when we last checked Supabase
-last_file_version = ""    # ✅ Tracks the specific version of the file we have in RAM
+last_update_time = 0      
+last_file_version = ""    
 
 # --- 2. SUPABASE ---
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -50,13 +51,12 @@ async def fetch_and_update_encodings():
     Only downloads the .pkl file if it is newer than what we have in RAM.
     """
     global last_update_time
-    global last_file_version  # We need to read/write this global
+    global last_file_version 
 
     if not supabase: return
 
     print("🔄 Smart-Refresh: Checking if file has changed in Storage...")
     try:
-        # 1. List files to peek at metadata (timestamp/id)
         files_list = supabase.storage.from_("raw_faces").list("encodings")
         
         target_file = None
@@ -72,17 +72,13 @@ async def fetch_and_update_encodings():
             print("⚠️ Refresh: No .pkl file found.")
             return
 
-        # 2. CHECK: Compare cloud version vs local version
-        # We use 'updated_at' or 'id' as the version signature
-        current_version = target_metadata.get('updated_at', '') # timestamp string
+        current_version = target_metadata.get('updated_at', '') 
         
         if current_version and current_version == last_file_version:
             print("✅ File is unchanged. Skipping download.")
-            # We still reset the timer so we don't check again for another 5 mins
             last_update_time = time.time()
             return
 
-        # 3. If versions don't match, Download!
         print(f"⬇️ New version found ({current_version}). Downloading {target_file}...")
         file_path = f"encodings/{target_file}"
         data_bytes = supabase.storage.from_("raw_faces").download(file_path)
@@ -95,10 +91,8 @@ async def fetch_and_update_encodings():
             
             new_knowledge_base = {str(name): enc for name, enc in zip(names, encodings)}
             
-            # Update the AI Engine
             update_face_bank(new_knowledge_base)
             
-            # ✅ Update our version trackers
             last_file_version = current_version
             last_update_time = time.time()
             
@@ -111,11 +105,9 @@ async def fetch_and_update_encodings():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # --- STARTUP ---
     print("🚀 Server Starting...")
-    await fetch_and_update_encodings() # Always load on "Cold Start"
+    await fetch_and_update_encodings()
     yield
-    # --- SHUTDOWN ---
     print("🛑 Server Shutting Down...")
 
 # --- 5. API APP ---
@@ -131,7 +123,6 @@ app.add_middleware(
 
 # --- 6. HELPER FUNCTIONS ---
 def get_student_name(student_id: str) -> str:
-    """Fetches real name from Supabase DB using the ID."""
     if not supabase: return student_id
     try:
         resp = supabase.table("students").select("name").eq("id", student_id).execute()
@@ -149,9 +140,9 @@ def log_attendance(student_id: str, confidence: float, status: str):
     }
     try:
         supabase.table('attendance_records').insert(data).execute()
-        print(f"📝 Logged: {student_id} ({status})")
+        print(f"📝 Background Log Success: {student_id}")
     except Exception as e:
-        print(f"❌ Log Error: {e}")
+        print(f"❌ Background Log Error: {e}")
 
 # --- 7. ENDPOINTS ---
 @app.get("/")
@@ -160,21 +151,21 @@ def health_check():
 
 @app.post("/refresh")
 async def manual_refresh():
-    # Force a refresh regardless of timer
     await fetch_and_update_encodings()
     return {"status": "success"}
 
+# ✅ 2. INJECT BackgroundTasks HERE
 @app.post("/verify")
-async def verify_image(file: UploadFile = File(...)):
+async def verify_image(
+    background_tasks: BackgroundTasks,  # <--- NEW ARGUMENT
+    file: UploadFile = File(...)
+):
     global last_update_time
     
-    # ✅ LAZY CHECK: Is the 5-minute timer up?
-    # If yes, we call fetch_and_update, which will check the file version.
     if time.time() - last_update_time > 300:
         print("⏰ Timer expired (>5 mins). Checking storage...")
         await fetch_and_update_encodings()
 
-    # Read Image
     try:
         contents = await file.read()
         nparr = np.frombuffer(contents, np.uint8)
@@ -182,7 +173,6 @@ async def verify_image(file: UploadFile = File(...)):
     except:
         raise HTTPException(status_code=400, detail="Invalid image")
 
-    # Run AI
     try:
         result = verify_face(img_bgr)
     except Exception as e:
@@ -192,7 +182,6 @@ async def verify_image(file: UploadFile = File(...)):
     if not result:
         return {"status": "failed", "message": "No face detected"}
 
-    # Extract Data
     confidence = result.get("confidence", 0.0)
     status = result.get("status", "failed")
     message = result.get("message", "Unknown Identity")
@@ -206,7 +195,8 @@ async def verify_image(file: UploadFile = File(...)):
         student_id = result.get("student_id", "Unknown")
         real_name = get_student_name(student_id)
         
-        log_attendance(student_id, confidence, "success")
+        # ✅ 3. FIRE AND FORGET (Don't await, don't block)
+        background_tasks.add_task(log_attendance, student_id, confidence, "success")
 
         return {
             "status": "success",
@@ -217,7 +207,9 @@ async def verify_image(file: UploadFile = File(...)):
             "kps": kps_list
         }
     else:
-        log_attendance("Unknown", confidence, "failed")
+        # ✅ 3. FIRE AND FORGET HERE TOO
+        background_tasks.add_task(log_attendance, "Unknown", confidence, "failed")
+        
         return {
             "status": "failed",
             "message": message,
