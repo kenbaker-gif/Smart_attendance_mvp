@@ -3,23 +3,26 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install only basic system tools (needed for some networking/OS operations)
+# Install system dependencies for OpenCV/InsightFace
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    libgl1 \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first to leverage Docker cache
 COPY requirements.txt .
 
-# Install the 3 lightweight libraries (streamlit, supabase, python-dotenv)
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of your app code
 COPY . .
 
 # Set environment variables
-ENV PORT=8501
+ENV PORT=8000
+ENV PYTHONUNBUFFERED=1
 EXPOSE $PORT
 
-# Run Streamlit directly (No more 'conda run' needed)
-CMD streamlit run streamlit/app.py --server.address=0.0.0.0 --server.port=$PORT
+# Run FastAPI with Uvicorn
+CMD uvicorn app.main:app --host 0.0.0.0 --port $PORT
