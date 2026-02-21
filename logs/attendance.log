@@ -1,0 +1,59 @@
+[2026-02-21 12:03:52,598] [INFO] [attendance_system] Logging configuration loaded successfully.
+[2026-02-21 12:05:16,244] [INFO] [attendance_system] Logging configuration loaded successfully.
+[2026-02-21 12:05:24,899] [INFO] [attendance_system] Starting Smart Attendance System API
+[2026-02-21 12:05:36,404] [INFO] [attendance_system] Initializing InsightFace (buffalo_s)...
+[2026-02-21 12:05:44,506] [INFO] [attendance_system] ✅ InsightFace initialized
+[2026-02-21 12:05:59,706] [INFO] [attendance_system] Downloading encodings from Supabase...
+[2026-02-21 12:06:03,668] [INFO] [attendance_system] ✅ Loaded 69 encodings from Supabase
+[2026-02-21 12:09:34,861] [INFO] [attendance_system] Shutting down Smart Attendance System API
+[2026-02-21 12:09:38,639] [INFO] [attendance_system] Logging configuration loaded successfully.
+[2026-02-21 12:09:47,808] [INFO] [attendance_system] Starting Smart Attendance System API
+[2026-02-21 12:09:48,274] [INFO] [attendance_system] Logging configuration loaded successfully.
+[2026-02-21 12:09:59,700] [INFO] [attendance_system] Initializing InsightFace (buffalo_s)...
+[2026-02-21 12:10:04,130] [INFO] [attendance_system] ✅ InsightFace initialized
+[2026-02-21 12:10:04,134] [INFO] [attendance_system] ✅ Loaded 69 encodings from cache
+[2026-02-21 12:10:06,375] [INFO] [attendance_system] Logging configuration loaded successfully.
+[2026-02-21 12:10:14,942] [INFO] [attendance_system] Starting Smart Attendance System API
+[2026-02-21 12:10:24,030] [INFO] [attendance_system] Initializing InsightFace (buffalo_s)...
+[2026-02-21 12:10:27,719] [INFO] [attendance_system] ✅ InsightFace initialized
+[2026-02-21 12:10:27,721] [INFO] [attendance_system] ✅ Loaded 69 encodings from cache
+[2026-02-21 12:13:26,681] [INFO] [attendance_system] Shutting down Smart Attendance System API
+[2026-02-21 12:13:28,985] [INFO] [attendance_system] Logging configuration loaded successfully.
+[2026-02-21 12:13:37,623] [INFO] [attendance_system] Starting Smart Attendance System API
+[2026-02-21 12:13:47,218] [INFO] [attendance_system] Initializing InsightFace (buffalo_s)...
+[2026-02-21 12:13:51,617] [INFO] [attendance_system] ✅ InsightFace initialized
+[2026-02-21 12:13:51,621] [INFO] [attendance_system] ✅ Loaded 69 encodings from cache
+[2026-02-21 12:13:54,198] [INFO] [attendance_system] Logging configuration loaded successfully.
+[2026-02-21 12:14:03,064] [INFO] [attendance_system] Starting Smart Attendance System API
+[2026-02-21 12:14:13,065] [INFO] [attendance_system] Initializing InsightFace (buffalo_s)...
+[2026-02-21 12:14:16,395] [INFO] [attendance_system] ✅ InsightFace initialized
+[2026-02-21 12:14:16,397] [INFO] [attendance_system] ✅ Loaded 69 encodings from cache
+[2026-02-21 12:14:18,133] [INFO] [attendance_system] Logging configuration loaded successfully.
+[2026-02-21 12:14:26,820] [INFO] [attendance_system] Starting Smart Attendance System API
+[2026-02-21 12:14:37,607] [INFO] [attendance_system] Initializing InsightFace (buffalo_s)...
+[2026-02-21 12:14:41,999] [INFO] [attendance_system] ✅ InsightFace initialized
+[2026-02-21 12:14:42,000] [INFO] [attendance_system] ✅ Loaded 69 encodings from cache
+[2026-02-21 12:14:43,604] [INFO] [attendance_system] Logging configuration loaded successfully.
+[2026-02-21 12:14:51,986] [INFO] [attendance_system] Starting Smart Attendance System API
+[2026-02-21 12:14:59,050] [INFO] [attendance_system] Initializing InsightFace (buffalo_s)...
+[2026-02-21 12:15:02,624] [INFO] [attendance_system] ✅ InsightFace initialized
+[2026-02-21 12:15:02,625] [INFO] [attendance_system] ✅ Loaded 69 encodings from cache
+[2026-02-21 12:15:04,324] [INFO] [attendance_system] Logging configuration loaded successfully.
+[2026-02-21 12:15:12,957] [INFO] [attendance_system] Starting Smart Attendance System API
+[2026-02-21 12:15:19,099] [INFO] [attendance_system] Initializing InsightFace (buffalo_s)...
+[2026-02-21 12:15:22,684] [INFO] [attendance_system] ✅ InsightFace initialized
+[2026-02-21 12:15:22,688] [INFO] [attendance_system] ✅ Loaded 69 encodings from cache
+[2026-02-21 12:18:01,627] [INFO] [attendance_system] Shutting down Smart Attendance System API
+[2026-02-21 12:18:03,975] [INFO] [attendance_system] Logging configuration loaded successfully.
+[2026-02-21 12:18:12,825] [INFO] [attendance_system] Starting Smart Attendance System API
+[2026-02-21 12:18:20,918] [INFO] [attendance_system] Initializing InsightFace (buffalo_s)...
+[2026-02-21 12:18:24,630] [INFO] [attendance_system] ✅ InsightFace initialized
+[2026-02-21 12:18:24,636] [INFO] [attendance_system] ✅ Loaded 69 encodings from cache
+[2026-02-21 12:18:31,273] [INFO] [attendance_system] Shutting down Smart Attendance System API
+[2026-02-21 12:18:33,062] [INFO] [attendance_system] Logging configuration loaded successfully.
+[2026-02-21 12:18:41,516] [INFO] [attendance_system] Starting Smart Attendance System API
+[2026-02-21 12:18:49,487] [INFO] [attendance_system] Initializing InsightFace (buffalo_s)...
+[2026-02-21 12:18:52,992] [INFO] [attendance_system] ✅ InsightFace initialized
+[2026-02-21 12:18:52,994] [INFO] [attendance_system] ✅ Loaded 69 encodings from cache
+[2026-02-21 12:19:45,085] [INFO] [attendance_system] Logging configuration loaded successfully.
+[2026-02-21 12:19:56,726] [INFO] [attendance_system] Logging configuration loaded successfully.
