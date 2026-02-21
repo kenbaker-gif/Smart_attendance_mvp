@@ -51,3 +51,5 @@ secrets.env
 # --------------------
 .DS_Store
 Thumbs.db
+
+Dockerfile.fix
