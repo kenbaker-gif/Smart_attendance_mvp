@@ -1,134 +1,219 @@
+import asyncio
+from contextlib import asynccontextmanager
+# ✅ 1. ADD BackgroundTasks TO IMPORTS
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, BackgroundTasks
+from pydantic import BaseModel
+import cv2
+import numpy as np
 import os
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from supabase import create_client, Client
+import sys
+import pickle
+import time
+from pathlib import Path
 from dotenv import load_dotenv
+from supabase import create_client
+from fastapi.middleware.cors import CORSMiddleware
 
-load_dotenv()
+# --- 1. PATH SETUP ---
+current_file = Path(__file__).resolve()
+project_root = current_file.parent.parent
+sys.path.append(str(project_root))
 
-app = FastAPI(title="Smart Attendance — Upload Service")
+env_path = project_root / "secrets.env"
+load_dotenv(env_path)
+
+# --- GLOBAL VARIABLES ---
+last_update_time = 0      
+last_file_version = ""    
+
+# --- 2. SUPABASE ---
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as e:
+        print(f"Database Error: {e}")
+
+# --- 3. ENGINE IMPORT ---
+try:
+    from app.face_engine.insightface_engine import verify_face, update_face_bank 
+except ImportError:
+    print("CRITICAL: Face engine could not load.")
+    def update_face_bank(data): pass
+    pass
+
+# --- 4. SMART DATA LOADING LOGIC ---
+async def fetch_and_update_encodings():
+    """
+    Checks Supabase Storage metadata. 
+    Only downloads the .pkl file if it is newer than what we have in RAM.
+    """
+    global last_update_time
+    global last_file_version 
+
+    if not supabase: return
+
+    print("🔄 Smart-Refresh: Checking if file has changed in Storage...")
+    try:
+        files_list = supabase.storage.from_("raw_faces").list("encodings")
+        
+        target_file = None
+        target_metadata = None
+        
+        for f in files_list:
+            if f['name'].endswith('.pkl') or f['name'].endswith('.pickle'):
+                target_file = f['name']
+                target_metadata = f
+                break
+        
+        if not target_file:
+            print("⚠️ Refresh: No .pkl file found.")
+            return
+
+        current_version = target_metadata.get('updated_at', '') 
+        
+        if current_version and current_version == last_file_version:
+            print("✅ File is unchanged. Skipping download.")
+            last_update_time = time.time()
+            return
+
+        print(f"⬇️ New version found ({current_version}). Downloading {target_file}...")
+        file_path = f"encodings/{target_file}"
+        data_bytes = supabase.storage.from_("raw_faces").download(file_path)
+        
+        data = pickle.loads(data_bytes)
+        
+        if "names" in data and "encodings" in data:
+            names = data["names"]
+            encodings = data["encodings"]
+            
+            new_knowledge_base = {str(name): enc for name, enc in zip(names, encodings)}
+            
+            update_face_bank(new_knowledge_base)
+            
+            last_file_version = current_version
+            last_update_time = time.time()
+            
+            print(f"✅ Loaded {len(new_knowledge_base)} students. RAM Updated.")
+        else:
+            print(f"❌ Format Error in {target_file}")
+
+    except Exception as e:
+        print(f"❌ Refresh Error: {e}")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("🚀 Server Starting...")
+    await fetch_and_update_encodings()
+    yield
+    print("🛑 Server Shutting Down...")
+
+# --- 5. API APP ---
+app = FastAPI(title="Attendance API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], 
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+# --- 6. HELPER FUNCTIONS ---
+def get_student_name(student_id: str) -> str:
+    if not supabase: return student_id
+    try:
+        resp = supabase.table("students").select("name").eq("id", student_id).execute()
+        if resp.data: return resp.data[0]['name']
+    except: pass
+    return student_id
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY in environment.")
+def log_attendance(student_id: str, confidence: float, status: str):
+    if not supabase: return
+    data = {
+        "student_id": student_id if status == "success" else None,
+        "confidence": float(confidence),
+        "detection_method": "mobile_api",
+        "verified": status
+    }
+    try:
+        supabase.table('attendance_records').insert(data).execute()
+        print(f"📝 Background Log Success: {student_id}")
+    except Exception as e:
+        print(f"❌ Background Log Error: {e}")
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-BUCKET        = "raw_faces"
-ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
-
-
+# --- 7. ENDPOINTS ---
 @app.get("/")
-def home():
-    return {"status": "Smart Attendance: OTA ACTIVE"}
+def health_check():
+    return {"status": "online"}
 
+@app.post("/refresh")
+async def manual_refresh():
+    await fetch_and_update_encodings()
+    return {"status": "success"}
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.post("/upload-student-face")
-async def upload_student(
-    student_id:     str        = Form(...),
-    name:           str        = Form(...),
-    institution_id: str        = Form(...),   # ✅ NKU or MUK
-    file:           UploadFile = File(...),
+# ✅ 2. INJECT BackgroundTasks HERE
+@app.post("/verify")
+async def verify_image(
+    background_tasks: BackgroundTasks,  # <--- NEW ARGUMENT
+    file: UploadFile = File(...)
 ):
-    # ── Validate inputs ────────────────────────────────────────────────
-    if not student_id.strip():
-        raise HTTPException(status_code=400, detail="student_id cannot be empty.")
-    if not name.strip():
-        raise HTTPException(status_code=400, detail="name cannot be empty.")
-    if not institution_id.strip():
-        raise HTTPException(status_code=400, detail="institution_id cannot be empty.")
-    if file.content_type not in ALLOWED_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid file type '{file.content_type}'. Allowed: jpeg, png, webp.",
-        )
-
-    file_content = await file.read()
-
-    if len(file_content) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="File too large. Maximum size is 10 MB.")
-    if len(file_content) == 0:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-
-    # ── Storage path uses prefixed student_id ─────────────────────────
-    # student_id already arrives prefixed from Flutter e.g. NKU2400102415
-    file_path = f"{student_id.strip()}/{file.filename}"
+    global last_update_time
+    
+    if time.time() - last_update_time > 300:
+        print("⏰ Timer expired (>5 mins). Checking storage...")
+        await fetch_and_update_encodings()
 
     try:
-        # Remove existing file to avoid storage conflicts
-        try:
-            supabase.storage.from_(BUCKET).remove([file_path])
-        except Exception:
-            pass
+        contents = await file.read()
+        nparr = np.frombuffer(contents, np.uint8)
+        img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid image")
 
-        # Upload image
-        supabase.storage.from_(BUCKET).upload(
-            path=file_path,
-            file=file_content,
-            file_options={"content-type": file.content_type},
-        )
+    try:
+        result = verify_face(img_bgr)
+    except Exception as e:
+        print(f"Engine Error: {e}")
+        return {"status": "error", "message": "Processing Error"}
 
-        image_url = supabase.storage.from_(BUCKET).get_public_url(file_path)
+    if not result:
+        return {"status": "failed", "message": "No face detected"}
 
-        # Upsert student record with institution_id
-        supabase.table("students").upsert({
-            "id":             student_id.strip(),
-            "name":           name.strip(),
-            "institution_id": institution_id.strip(),
-        }).execute()
+    confidence = result.get("confidence", 0.0)
+    status = result.get("status", "failed")
+    message = result.get("message", "Unknown Identity")
+    
+    bbox_raw = result.get("bbox")
+    kps_raw = result.get("kps")
+    bbox_list = bbox_raw if bbox_raw is not None else []
+    kps_list = kps_raw if kps_raw is not None else []
+
+    if status == "success":
+        student_id = result.get("student_id", "Unknown")
+        real_name = get_student_name(student_id)
+        
+        # ✅ 3. FIRE AND FORGET (Don't await, don't block)
+        background_tasks.add_task(log_attendance, student_id, confidence, "success")
 
         return {
-            "success":        True,
-            "student_id":     student_id.strip(),
-            "name":           name.strip(),
-            "institution_id": institution_id.strip(),
-            "image_url":      image_url,
-            "file_path":      file_path,
+            "status": "success",
+            "student_id": student_id,
+            "name": real_name,
+            "confidence": round(confidence, 2),
+            "bbox": bbox_list,
+            "kps": kps_list
         }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
-
-
-@app.get("/students")
-def list_students(institution_id: str = None):
-    """List students — optionally filtered by institution."""
-    try:
-        query = supabase.table("students").select("*").order("name")
-        if institution_id:
-            query = query.eq("institution_id", institution_id)
-        response = query.execute()
-        return {"students": response.data, "count": len(response.data)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.delete("/students/{student_id}")
-def delete_student(student_id: str):
-    """Remove a student and their images from storage."""
-    try:
-        files = supabase.storage.from_(BUCKET).list(student_id)
-        if files:
-            paths = [f"{student_id}/{f['name']}" for f in files]
-            supabase.storage.from_(BUCKET).remove(paths)
-        supabase.table("students").delete().eq("id", student_id).execute()
-        return {"success": True, "deleted_student_id": student_id}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    else:
+        # ✅ 3. FIRE AND FORGET HERE TOO
+        background_tasks.add_task(log_attendance, "Unknown", confidence, "failed")
+        
+        return {
+            "status": "failed",
+            "message": message,
+            "confidence": round(confidence, 2),
+            "bbox": bbox_list,
+            "kps": kps_list
+        }
