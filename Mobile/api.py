@@ -126,14 +126,15 @@ def log_attendance(student_id: str, confidence: float, status: str):
 
     # ✅ Extract institution_id from prefixed student_id
     # e.g. NKU2400102435 → NKU, MUK2400102435 → MUK
-    # Extract institution_id from prefixed student_id e.g. NKU2400102435 → NKU
-    # Only for known institutions — failed scans get None
-    known_institutions = {"NKU", "MUK"}
+    # Look up institution_id from students table using student_id
     institution_id = None
-    if student_id and len(student_id) >= 3:
-        prefix = student_id[:3].upper()
-        if prefix in known_institutions:
-            institution_id = prefix
+    if student_id and status == "success" and supabase:
+        try:
+            resp = supabase.table("students").select("institution_id").eq("id", student_id).maybeSingle().execute()
+            if resp.data:
+                institution_id = resp.data.get("institution_id")
+        except:
+            pass
 
     data = {
         "student_id":       student_id if status == "success" else None,
