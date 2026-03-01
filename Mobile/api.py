@@ -126,16 +126,21 @@ def log_attendance(student_id: str, confidence: float, status: str):
 
     # ✅ Extract institution_id from prefixed student_id
     # e.g. NKU2400102435 → NKU, MUK2400102435 → MUK
+    # Extract institution_id from prefixed student_id e.g. NKU2400102435 → NKU
+    # Only for known institutions — failed scans get None
+    known_institutions = {"NKU", "MUK"}
     institution_id = None
-    if student_id and len(student_id) >= 3 and student_id[:3].isalpha():
-        institution_id = student_id[:3].upper()
+    if student_id and len(student_id) >= 3:
+        prefix = student_id[:3].upper()
+        if prefix in known_institutions:
+            institution_id = prefix
 
     data = {
-        "student_id":     student_id if status == "success" else None,
-        "confidence":     float(confidence),
+        "student_id":       student_id if status == "success" else None,
+        "confidence":       float(confidence),
         "detection_method": "mobile_api",
-        "verified":       status,
-        "institution_id": institution_id,  # ✅ now included
+        "verified":         status,
+        "institution_id":   institution_id,
     }
     try:
         supabase.table('attendance_records').insert(data).execute()
