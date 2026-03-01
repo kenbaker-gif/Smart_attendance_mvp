@@ -1,6 +1,5 @@
 import asyncio
 from contextlib import asynccontextmanager
-# ✅ 1. ADD BackgroundTasks TO IMPORTS
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, BackgroundTasks
 from pydantic import BaseModel
 import cv2
@@ -46,10 +45,6 @@ except ImportError:
 
 # --- 4. SMART DATA LOADING LOGIC ---
 async def fetch_and_update_encodings():
-    """
-    Checks Supabase Storage metadata. 
-    Only downloads the .pkl file if it is newer than what we have in RAM.
-    """
     global last_update_time
     global last_file_version 
 
@@ -88,14 +83,10 @@ async def fetch_and_update_encodings():
         if "names" in data and "encodings" in data:
             names = data["names"]
             encodings = data["encodings"]
-            
             new_knowledge_base = {str(name): enc for name, enc in zip(names, encodings)}
-            
             update_face_bank(new_knowledge_base)
-            
             last_file_version = current_version
             last_update_time = time.time()
-            
             print(f"✅ Loaded {len(new_knowledge_base)} students. RAM Updated.")
         else:
             print(f"❌ Format Error in {target_file}")
@@ -132,15 +123,23 @@ def get_student_name(student_id: str) -> str:
 
 def log_attendance(student_id: str, confidence: float, status: str):
     if not supabase: return
+
+    # ✅ Extract institution_id from prefixed student_id
+    # e.g. NKU2400102435 → NKU, MUK2400102435 → MUK
+    institution_id = None
+    if student_id and len(student_id) >= 3 and student_id[:3].isalpha():
+        institution_id = student_id[:3].upper()
+
     data = {
-        "student_id": student_id if status == "success" else None,
-        "confidence": float(confidence),
+        "student_id":     student_id if status == "success" else None,
+        "confidence":     float(confidence),
         "detection_method": "mobile_api",
-        "verified": status
+        "verified":       status,
+        "institution_id": institution_id,  # ✅ now included
     }
     try:
         supabase.table('attendance_records').insert(data).execute()
-        print(f"📝 Background Log Success: {student_id}")
+        print(f"📝 Logged: {student_id} | {institution_id} | {status}")
     except Exception as e:
         print(f"❌ Background Log Error: {e}")
 
@@ -154,10 +153,9 @@ async def manual_refresh():
     await fetch_and_update_encodings()
     return {"status": "success"}
 
-# ✅ 2. INJECT BackgroundTasks HERE
 @app.post("/verify")
 async def verify_image(
-    background_tasks: BackgroundTasks,  # <--- NEW ARGUMENT
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...)
 ):
     global last_update_time
@@ -194,10 +192,7 @@ async def verify_image(
     if status == "success":
         student_id = result.get("student_id", "Unknown")
         real_name = get_student_name(student_id)
-        
-        # ✅ 3. FIRE AND FORGET (Don't await, don't block)
         background_tasks.add_task(log_attendance, student_id, confidence, "success")
-
         return {
             "status": "success",
             "student_id": student_id,
@@ -207,9 +202,7 @@ async def verify_image(
             "kps": kps_list
         }
     else:
-        # ✅ 3. FIRE AND FORGET HERE TOO
         background_tasks.add_task(log_attendance, "Unknown", confidence, "failed")
-        
         return {
             "status": "failed",
             "message": message,
