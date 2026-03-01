@@ -1,7 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form, BackgroundTasks
-from pydantic import BaseModel
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 import cv2
 import numpy as np
 import os
@@ -22,8 +21,10 @@ env_path = project_root / "secrets.env"
 load_dotenv(env_path)
 
 # --- GLOBAL VARIABLES ---
-last_update_time = 0      
-last_file_version = ""    
+last_update_time = 0
+last_file_version = ""
+_name_cache: dict = {}       # student_id → name
+_institution_cache: dict = {}  # student_id → institution_id
 
 # --- 2. SUPABASE ---
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -37,38 +38,48 @@ if SUPABASE_URL and SUPABASE_KEY:
 
 # --- 3. ENGINE IMPORT ---
 try:
-    from app.face_engine.insightface_engine import verify_face, update_face_bank 
+    from app.face_engine.insightface_engine import verify_face, update_face_bank
 except ImportError:
     print("CRITICAL: Face engine could not load.")
     def update_face_bank(data): pass
-    pass
 
-# --- 4. SMART DATA LOADING LOGIC ---
+# --- 4. PRELOAD STUDENT CACHE ---
+async def preload_student_cache():
+    """Load all student names + institution_ids into RAM on startup."""
+    global _name_cache, _institution_cache
+    if not supabase: return
+    try:
+        resp = supabase.table("students").select("id, name, institution_id").execute()
+        for s in resp.data:
+            _name_cache[s['id']]        = s.get('name', s['id'])
+            _institution_cache[s['id']] = s.get('institution_id')
+        print(f"✅ Preloaded {len(_name_cache)} students into cache")
+    except Exception as e:
+        print(f"❌ Cache preload failed: {e}")
+
+# --- 5. SMART ENCODINGS REFRESH ---
 async def fetch_and_update_encodings():
-    global last_update_time
-    global last_file_version 
-
+    global last_update_time, last_file_version
     if not supabase: return
 
     print("🔄 Smart-Refresh: Checking if file has changed in Storage...")
     try:
         files_list = supabase.storage.from_("raw_faces").list("encodings")
-        
+
         target_file = None
         target_metadata = None
-        
         for f in files_list:
             if f['name'].endswith('.pkl') or f['name'].endswith('.pickle'):
                 target_file = f['name']
                 target_metadata = f
                 break
-        
+
         if not target_file:
             print("⚠️ Refresh: No .pkl file found.")
             return
 
-        current_version = target_metadata.get('updated_at', '') 
-        
+        current_version = target_metadata.get('updated_at', '')
+
         if current_version and current_version == last_file_version:
             print("✅ File is unchanged. Skipping download.")
             last_update_time = time.time()
@@ -77,9 +88,8 @@ async def fetch_and_update_encodings():
         print(f"⬇️ New version found ({current_version}). Downloading {target_file}...")
         file_path = f"encodings/{target_file}"
         data_bytes = supabase.storage.from_("raw_faces").download(file_path)
-        
         data = pickle.loads(data_bytes)
-        
+
         if "names" in data and "encodings" in data:
             names = data["names"]
             encodings = data["encodings"]
@@ -94,48 +104,51 @@ async def fetch_and_update_encodings():
     except Exception as e:
         print(f"❌ Refresh Error: {e}")
 
+# --- 6. LIFESPAN ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 Server Starting...")
     await fetch_and_update_encodings()
+    await preload_student_cache()   # ✅ preload names into RAM
     yield
     print("🛑 Server Shutting Down...")
 
-# --- 5. API APP ---
+# --- 7. APP ---
 app = FastAPI(title="Attendance API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- 6. HELPER FUNCTIONS ---
+# --- 8. HELPER FUNCTIONS ---
 def get_student_name(student_id: str) -> str:
+    """Instant lookup from RAM cache — no DB call."""
+    if student_id in _name_cache:
+        return _name_cache[student_id]
+    # Fallback to DB if not in cache (new student registered after startup)
     if not supabase: return student_id
     try:
-        resp = supabase.table("students").select("name").eq("id", student_id).execute()
-        if resp.data: return resp.data[0]['name']
-    except: pass
+        resp = supabase.table("students").select("name, institution_id") \
+            .eq("id", student_id).maybeSingle().execute()
+        if resp.data:
+            _name_cache[student_id]        = resp.data.get('name', student_id)
+            _institution_cache[student_id] = resp.data.get('institution_id')
+            return _name_cache[student_id]
+    except:
+        pass
     return student_id
+
+def get_institution_id(student_id: str) -> str | None:
+    """Instant lookup from RAM cache — no DB call."""
+    return _institution_cache.get(student_id)
 
 def log_attendance(student_id: str, confidence: float, status: str):
     if not supabase: return
-
-    # ✅ Extract institution_id from prefixed student_id
-    # e.g. NKU2400102435 → NKU, MUK2400102435 → MUK
-    # Look up institution_id from students table using student_id
-    institution_id = None
-    if student_id and status == "success" and supabase:
-        try:
-            resp = supabase.table("students").select("institution_id").eq("id", student_id).maybeSingle().execute()
-            if resp.data:
-                institution_id = resp.data.get("institution_id")
-        except:
-            pass
-
+    institution_id = get_institution_id(student_id) if status == "success" else None
     data = {
         "student_id":       student_id if status == "success" else None,
         "confidence":       float(confidence),
@@ -149,7 +162,7 @@ def log_attendance(student_id: str, confidence: float, status: str):
     except Exception as e:
         print(f"❌ Background Log Error: {e}")
 
-# --- 7. ENDPOINTS ---
+# --- 9. ENDPOINTS ---
 @app.get("/")
 def health_check():
     return {"status": "online"}
@@ -157,6 +170,7 @@ def health_check():
 @app.post("/refresh")
 async def manual_refresh():
     await fetch_and_update_encodings()
+    await preload_student_cache()
     return {"status": "success"}
 
 @app.post("/verify")
@@ -165,7 +179,7 @@ async def verify_image(
     file: UploadFile = File(...)
 ):
     global last_update_time
-    
+
     if time.time() - last_update_time > 300:
         print("⏰ Timer expired (>5 mins). Checking storage...")
         await fetch_and_update_encodings()
@@ -187,32 +201,29 @@ async def verify_image(
         return {"status": "failed", "message": "No face detected"}
 
     confidence = result.get("confidence", 0.0)
-    status = result.get("status", "failed")
-    message = result.get("message", "Unknown Identity")
-    
-    bbox_raw = result.get("bbox")
-    kps_raw = result.get("kps")
-    bbox_list = bbox_raw if bbox_raw is not None else []
-    kps_list = kps_raw if kps_raw is not None else []
+    status     = result.get("status", "failed")
+    message    = result.get("message", "Unknown Identity")
+    bbox_list  = result.get("bbox") or []
+    kps_list   = result.get("kps") or []
 
     if status == "success":
         student_id = result.get("student_id", "Unknown")
-        real_name = get_student_name(student_id)
+        real_name  = get_student_name(student_id)   # ✅ instant from cache
         background_tasks.add_task(log_attendance, student_id, confidence, "success")
         return {
-            "status": "success",
+            "status":     "success",
             "student_id": student_id,
-            "name": real_name,
+            "name":       real_name,
             "confidence": round(confidence, 2),
-            "bbox": bbox_list,
-            "kps": kps_list
+            "bbox":       bbox_list,
+            "kps":        kps_list,
         }
     else:
         background_tasks.add_task(log_attendance, "Unknown", confidence, "failed")
         return {
-            "status": "failed",
-            "message": message,
+            "status":     "failed",
+            "message":    message,
             "confidence": round(confidence, 2),
-            "bbox": bbox_list,
-            "kps": kps_list
+            "bbox":       bbox_list,
+            "kps":        kps_list,
         }
