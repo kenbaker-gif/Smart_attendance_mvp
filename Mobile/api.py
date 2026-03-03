@@ -104,6 +104,80 @@ async def fetch_and_update_encodings():
     except Exception as e:
         print(f"❌ Refresh Error: {e}")
 
+
+async def build_encodings_from_storage():
+    """
+    Rebuilds encodings.pkl by reading images from new folder structure:
+    raw_faces/NKU/2400102415/1.jpg
+    raw_faces/MUK/2400102435/1.jpg
+    """
+    if not supabase: return
+    print("🔨 Building encodings from storage...")
+
+    known_institutions = ["NKU", "MUK"]
+    all_names     = []
+    all_encodings = []
+
+    for institution in known_institutions:
+        try:
+            student_folders = supabase.storage.from_("raw_faces").list(institution)
+        except:
+            print(f"⚠️ No folder found for {institution}")
+            continue
+
+        for folder in student_folders:
+            student_id = folder["name"]
+            folder_path = f"{institution}/{student_id}"
+
+            try:
+                files = supabase.storage.from_("raw_faces").list(folder_path)
+            except:
+                continue
+
+            for f in files:
+                if not f["name"].endswith((".jpg", ".jpeg", ".png")):
+                    continue
+                try:
+                    img_bytes = supabase.storage.from_("raw_faces").download(
+                        f"{folder_path}/{f['name']}"
+                    )
+                    nparr   = np.frombuffer(img_bytes, np.uint8)
+                    img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                    if img_bgr is None:
+                        continue
+
+                    # Get embedding from InsightFace engine
+                    from app.face_engine.insightface_engine import get_embedding
+                    embedding = get_embedding(img_bgr)
+                    if embedding is not None:
+                        all_names.append(student_id)
+                        all_encodings.append(embedding)
+                        print(f"   ✅ {institution}/{student_id}/{f['name']}")
+                except Exception as e:
+                    print(f"   ❌ {folder_path}/{f['name']}: {e}")
+
+    if all_names:
+        pkl_data  = {"names": all_names, "encodings": all_encodings}
+        pkl_bytes = pickle.dumps(pkl_data)
+
+        # Save to Supabase Storage
+        try:
+            supabase.storage.from_("raw_faces").remove(["encodings/encodings_insightface.pkl"])
+        except:
+            pass
+        supabase.storage.from_("raw_faces").upload(
+            "encodings/encodings_insightface.pkl",
+            pkl_bytes,
+        )
+        print(f"✅ Saved {len(all_names)} embeddings to storage")
+
+        # Also update RAM immediately
+        kb = {str(n): e for n, e in zip(all_names, all_encodings)}
+        update_face_bank(kb)
+        print("✅ RAM updated")
+    else:
+        print("⚠️ No embeddings generated")
+
 # --- 6. LIFESPAN ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -133,7 +207,7 @@ def get_student_name(student_id: str) -> str:
     if not supabase: return student_id
     try:
         resp = supabase.table("students").select("name, institution_id") \
-            .eq("id", student_id).maybeSingle().execute()
+            .eq("id", student_id).maybe_single().execute()
         if resp.data:
             _name_cache[student_id]        = resp.data.get('name', student_id)
             _institution_cache[student_id] = resp.data.get('institution_id')
@@ -305,6 +379,9 @@ async def sync_encodings(authorization: str = Header(None)):
     if authorization != f"Bearer {ADMIN_SECRET}":
         raise HTTPException(status_code=401, detail="Invalid admin secret")
     try:
+        # ✅ Rebuild encodings from new NKU/MUK folder structure
+        await build_encodings_from_storage()
+        # Then reload from storage into RAM
         await fetch_and_update_encodings()
         await preload_student_cache()
         return {"success": True, "message": "Sync complete"}
