@@ -114,7 +114,14 @@ async def build_encodings_from_storage():
     if not supabase: return
     print("🔨 Building encodings from storage...")
 
-    known_institutions = ["NKU", "MUK"]
+    # ✅ Fetch institutions dynamically — new signups auto-included
+    try:
+        inst_resp = supabase.table("institutions").select("id").execute()
+        known_institutions = [r["id"] for r in inst_resp.data]
+        print(f"📋 Found institutions: {known_institutions}")
+    except Exception as e:
+        print(f"⚠️ Could not fetch institutions, falling back: {e}")
+        known_institutions = ["NKU", "MUK"]
     all_names     = []
     all_encodings = []
 
