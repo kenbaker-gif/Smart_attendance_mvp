@@ -1,6 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends, Header
 import cv2
 import numpy as np
 import os
@@ -23,18 +23,29 @@ load_dotenv(env_path)
 # --- GLOBAL VARIABLES ---
 last_update_time = 0
 last_file_version = ""
-_name_cache: dict = {}       # student_id → name
-_institution_cache: dict = {}  # student_id → institution_id
+_name_cache: dict = {}        # student_id → name
+_institution_cache: dict = {} # student_id → institution_id
 
 # --- 2. SUPABASE ---
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")  # anon key for auth verification
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # service role key for admin ops
+ADMIN_SECRET = os.getenv("ADMIN_SECRET", "")
+
 supabase = None
+supabase_admin = None
+
 if SUPABASE_URL and SUPABASE_KEY:
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     except Exception as e:
         print(f"Database Error: {e}")
+
+if SUPABASE_URL and SUPABASE_SERVICE_KEY:
+    try:
+        supabase_admin = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+    except Exception as e:
+        print(f"Admin DB Error: {e}")
 
 # --- 3. ENGINE IMPORT ---
 try:
@@ -43,13 +54,36 @@ except ImportError:
     print("CRITICAL: Face engine could not load.")
     def update_face_bank(data): pass
 
-# --- 4. PRELOAD STUDENT CACHE ---
+# --- 4. AUTH DEPENDENCIES ---
+
+async def verify_supabase_token(authorization: str = Header(None)):
+    """Verify that the request comes from a valid authenticated Supabase user."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    token = authorization.replace("Bearer ", "").strip()
+    try:
+        user_response = supabase.auth.get_user(token)
+        if not user_response or not user_response.user:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+        return user_response.user
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=401, detail="Token verification failed")
+
+def check_admin(authorization: str = Header(None)):
+    """Verify admin secret for internal/dashboard endpoints."""
+    if not authorization or authorization != f"Bearer {ADMIN_SECRET}":
+        raise HTTPException(status_code=401, detail="Invalid admin secret")
+
+# --- 5. PRELOAD STUDENT CACHE ---
 async def preload_student_cache():
     """Load all student names + institution_ids into RAM on startup."""
     global _name_cache, _institution_cache
-    if not supabase: return
+    if not supabase_admin:
+        return
     try:
-        resp = supabase.table("students").select("id, name, institution_id").execute()
+        resp = supabase_admin.table("students").select("id, name, institution_id").execute()
         for s in resp.data:
             _name_cache[s['id']]        = s.get('name', s['id'])
             _institution_cache[s['id']] = s.get('institution_id')
@@ -57,14 +91,15 @@ async def preload_student_cache():
     except Exception as e:
         print(f"❌ Cache preload failed: {e}")
 
-# --- 5. SMART ENCODINGS REFRESH ---
+# --- 6. SMART ENCODINGS REFRESH ---
 async def fetch_and_update_encodings():
     global last_update_time, last_file_version
-    if not supabase: return
+    if not supabase_admin:
+        return
 
     print("🔄 Smart-Refresh: Checking if file has changed in Storage...")
     try:
-        files_list = supabase.storage.from_("raw_faces").list("encodings")
+        files_list = supabase_admin.storage.from_("raw_faces").list("encodings")
 
         target_file = None
         target_metadata = None
@@ -87,7 +122,7 @@ async def fetch_and_update_encodings():
 
         print(f"⬇️ New version found ({current_version}). Downloading {target_file}...")
         file_path = f"encodings/{target_file}"
-        data_bytes = supabase.storage.from_("raw_faces").download(file_path)
+        data_bytes = supabase_admin.storage.from_("raw_faces").download(file_path)
         data = pickle.loads(data_bytes)
 
         if "names" in data and "encodings" in data:
@@ -107,27 +142,28 @@ async def fetch_and_update_encodings():
 
 async def build_encodings_from_storage():
     """
-    Rebuilds encodings.pkl by reading images from new folder structure:
+    Rebuilds encodings.pkl by reading images from folder structure:
     raw_faces/NKU/2400102415/1.jpg
     raw_faces/MUK/2400102435/1.jpg
     """
-    if not supabase: return
+    if not supabase_admin:
+        return
     print("🔨 Building encodings from storage...")
 
-    # ✅ Fetch institutions dynamically — new signups auto-included
     try:
-        inst_resp = supabase.table("institutions").select("id").execute()
+        inst_resp = supabase_admin.table("institutions").select("id").execute()
         known_institutions = [r["id"] for r in inst_resp.data]
         print(f"📋 Found institutions: {known_institutions}")
     except Exception as e:
         print(f"⚠️ Could not fetch institutions, falling back: {e}")
         known_institutions = ["NKU", "MUK"]
+
     all_names     = []
     all_encodings = []
 
     for institution in known_institutions:
         try:
-            student_folders = supabase.storage.from_("raw_faces").list(institution)
+            student_folders = supabase_admin.storage.from_("raw_faces").list(institution)
         except:
             print(f"⚠️ No folder found for {institution}")
             continue
@@ -137,7 +173,7 @@ async def build_encodings_from_storage():
             folder_path = f"{institution}/{student_id}"
 
             try:
-                files = supabase.storage.from_("raw_faces").list(folder_path)
+                files = supabase_admin.storage.from_("raw_faces").list(folder_path)
             except:
                 continue
 
@@ -145,7 +181,7 @@ async def build_encodings_from_storage():
                 if not f["name"].endswith((".jpg", ".jpeg", ".png")):
                     continue
                 try:
-                    img_bytes = supabase.storage.from_("raw_faces").download(
+                    img_bytes = supabase_admin.storage.from_("raw_faces").download(
                         f"{folder_path}/{f['name']}"
                     )
                     nparr   = np.frombuffer(img_bytes, np.uint8)
@@ -153,7 +189,6 @@ async def build_encodings_from_storage():
                     if img_bgr is None:
                         continue
 
-                    # Get embedding from InsightFace engine
                     from app.face_engine.insightface_engine import get_embedding
                     embedding = get_embedding(img_bgr)
                     if embedding is not None:
@@ -167,57 +202,61 @@ async def build_encodings_from_storage():
         pkl_data  = {"names": all_names, "encodings": all_encodings}
         pkl_bytes = pickle.dumps(pkl_data)
 
-        # Save to Supabase Storage
         try:
-            supabase.storage.from_("raw_faces").remove(["encodings/encodings_insightface.pkl"])
+            supabase_admin.storage.from_("raw_faces").remove(["encodings/encodings_insightface.pkl"])
         except:
             pass
-        supabase.storage.from_("raw_faces").upload(
+        supabase_admin.storage.from_("raw_faces").upload(
             "encodings/encodings_insightface.pkl",
             pkl_bytes,
         )
         print(f"✅ Saved {len(all_names)} embeddings to storage")
 
-        # Also update RAM immediately
         kb = {str(n): e for n, e in zip(all_names, all_encodings)}
         update_face_bank(kb)
         print("✅ RAM updated")
     else:
         print("⚠️ No embeddings generated")
 
-# --- 6. LIFESPAN ---
+# --- 7. LIFESPAN ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 Server Starting...")
     await fetch_and_update_encodings()
-    await preload_student_cache()   # ✅ preload names into RAM
+    await preload_student_cache()
     yield
     print("🛑 Server Shutting Down...")
 
-# --- 7. APP ---
+# --- 8. APP ---
 app = FastAPI(title="Attendance API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://faceattend.app",
+        "https://www.faceattend.app",
+        "http://localhost:3000",
+        "http://localhost:8080",
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
-# --- 8. HELPER FUNCTIONS ---
+# --- 9. HELPER FUNCTIONS ---
 def get_student_name(student_id: str) -> str:
     """Instant lookup from RAM cache — no DB call."""
     if student_id in _name_cache:
         return _name_cache[student_id]
     # Fallback to DB if not in cache (new student registered after startup)
-    if not supabase: return student_id
+    if not supabase_admin:
+        return student_id
     try:
-        resp = supabase.table("students").select("name, institution_id") \
-            .eq("id", student_id).maybe_single().execute()
-        if resp.data:
-            _name_cache[student_id]        = resp.data.get('name', student_id)
-            _institution_cache[student_id] = resp.data.get('institution_id')
+        resp = supabase_admin.table("students").select("name, institution_id") \
+            .eq("id", student_id).limit(1).execute()
+        if resp.data and len(resp.data) > 0:
+            _name_cache[student_id]        = resp.data[0].get('name', student_id)
+            _institution_cache[student_id] = resp.data[0].get('institution_id')
             return _name_cache[student_id]
     except:
         pass
@@ -228,7 +267,8 @@ def get_institution_id(student_id: str) -> str | None:
     return _institution_cache.get(student_id)
 
 def log_attendance(student_id: str, confidence: float, status: str):
-    if not supabase: return
+    if not supabase_admin:
+        return
     institution_id = get_institution_id(student_id) if status == "success" else None
     data = {
         "student_id":       student_id if status == "success" else None,
@@ -238,26 +278,20 @@ def log_attendance(student_id: str, confidence: float, status: str):
         "institution_id":   institution_id,
     }
     try:
-        supabase.table('attendance_records').insert(data).execute()
+        supabase_admin.table('attendance_records').insert(data).execute()
         print(f"📝 Logged: {student_id} | {institution_id} | {status}")
     except Exception as e:
         print(f"❌ Background Log Error: {e}")
 
-# --- ADMIN AUTH ---
-ADMIN_SECRET = os.getenv("ADMIN_SECRET", "")
+# --- 10. ENDPOINTS ---
 
-def verify_admin_token(authorization: str = None):
-    from fastapi import Header
-    if authorization != f"Bearer {ADMIN_SECRET}":
-        raise HTTPException(status_code=401, detail="Invalid admin secret")
-
-# --- 9. ENDPOINTS ---
 @app.get("/")
 def health_check():
     return {"status": "online"}
 
 @app.post("/refresh")
-async def manual_refresh():
+async def manual_refresh(_=Depends(check_admin)):
+    """Refresh encodings — admin only."""
     await fetch_and_update_encodings()
     await preload_student_cache()
     return {"status": "success"}
@@ -265,7 +299,8 @@ async def manual_refresh():
 @app.post("/verify")
 async def verify_image(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    user=Depends(verify_supabase_token),  # ✅ requires valid Supabase session
 ):
     global last_update_time
 
@@ -279,6 +314,9 @@ async def verify_image(
         img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     except:
         raise HTTPException(status_code=400, detail="Invalid image")
+
+    if img_bgr is None:
+        raise HTTPException(status_code=400, detail="Could not decode image")
 
     try:
         result = verify_face(img_bgr)
@@ -297,7 +335,7 @@ async def verify_image(
 
     if status == "success":
         student_id = result.get("student_id", "Unknown")
-        real_name  = get_student_name(student_id)   # ✅ instant from cache
+        real_name  = get_student_name(student_id)
         background_tasks.add_task(log_attendance, student_id, confidence, "success")
         return {
             "status":     "success",
@@ -318,23 +356,18 @@ async def verify_image(
         }
 
 
-# --- ADMIN ENDPOINTS (for Streamlit dashboard) ---
-from fastapi import Depends, Header
-
-def check_admin(authorization: str = Header(None)):
-    if authorization != f"Bearer {ADMIN_SECRET}":
-        raise HTTPException(status_code=401, detail="Invalid admin secret")
+# --- 11. ADMIN ENDPOINTS (for Streamlit dashboard) ---
 
 @app.get("/admin/attendance-records")
 def get_attendance_records(
     institution_id: str = None,
     limit: int = 500,
-    _=Depends(check_admin)
+    _=Depends(check_admin),
 ):
-    if not supabase:
+    if not supabase_admin:
         raise HTTPException(status_code=503, detail="Supabase not configured")
     try:
-        query = supabase.table("attendance_records") \
+        query = supabase_admin.table("attendance_records") \
             .select("*") \
             .order("timestamp", desc=True) \
             .limit(limit)
@@ -345,11 +378,14 @@ def get_attendance_records(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/admin/attendance_summary")
-def get_summary(institution_id: str = None, _=Depends(check_admin)):
-    if not supabase:
+def get_summary(
+    institution_id: str = None,
+    _=Depends(check_admin),
+):
+    if not supabase_admin:
         raise HTTPException(status_code=503, detail="Supabase not configured")
     try:
-        query = supabase.table("attendance_records").select("*")
+        query = supabase_admin.table("attendance_records").select("*")
         if institution_id:
             query = query.eq("institution_id", institution_id)
         rows = query.execute().data
@@ -369,11 +405,14 @@ def get_summary(institution_id: str = None, _=Depends(check_admin)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/students")
-def get_students(institution_id: str = None, _=Depends(check_admin)):
-    if not supabase:
+def get_students(
+    institution_id: str = None,
+    _=Depends(check_admin),
+):
+    if not supabase_admin:
         raise HTTPException(status_code=503, detail="Supabase not configured")
     try:
-        query = supabase.table("students").select("*").order("name")
+        query = supabase_admin.table("students").select("*").order("name")
         if institution_id:
             query = query.eq("institution_id", institution_id)
         data = query.execute().data
@@ -382,13 +421,9 @@ def get_students(institution_id: str = None, _=Depends(check_admin)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/admin/sync-encodings")
-async def sync_encodings(authorization: str = Header(None)):
-    if authorization != f"Bearer {ADMIN_SECRET}":
-        raise HTTPException(status_code=401, detail="Invalid admin secret")
+async def sync_encodings(_=Depends(check_admin)):
     try:
-        # ✅ Rebuild encodings from new NKU/MUK folder structure
         await build_encodings_from_storage()
-        # Then reload from storage into RAM
         await fetch_and_update_encodings()
         await preload_student_cache()
         return {"success": True, "message": "Sync complete"}
