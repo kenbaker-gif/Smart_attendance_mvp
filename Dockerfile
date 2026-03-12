@@ -45,6 +45,9 @@ RUN mkdir -p /app/app/streamlit/data
 # Copy your source code last (since it changes most often)
 COPY . .
 
+# Pre-download uniface antispoof model weights at build time
+RUN python3 -c "from uniface import create_spoofer; create_spoofer()"
+
 # EXPOSE is optional for Railway but good for documentation
 EXPOSE 8000
 
