@@ -27,12 +27,12 @@ _name_cache: dict = {}        # student_id → name
 _institution_cache: dict = {} # student_id → institution_id
 
 # --- 2. SUPABASE ---
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")  # anon key for auth verification
+SUPABASE_URL         = os.getenv("SUPABASE_URL")
+SUPABASE_KEY         = os.getenv("SUPABASE_KEY")          # anon key for auth verification
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # service role key for admin ops
-ADMIN_SECRET = os.getenv("ADMIN_SECRET", "")
+ADMIN_SECRET         = os.getenv("ADMIN_SECRET", "")
 
-supabase = None
+supabase       = None
 supabase_admin = None
 
 if SUPABASE_URL and SUPABASE_KEY:
@@ -49,10 +49,11 @@ if SUPABASE_URL and SUPABASE_SERVICE_KEY:
 
 # --- 3. ENGINE IMPORT ---
 try:
-    from app.face_engine.insightface_engine import verify_face, update_face_bank
+    from app.face_engine.insightface_engine import verify_face, update_face_bank, preload_models
 except ImportError:
     print("CRITICAL: Face engine could not load.")
     def update_face_bank(data): pass
+    def preload_models(): pass
 
 # --- 4. AUTH DEPENDENCIES ---
 
@@ -101,11 +102,11 @@ async def fetch_and_update_encodings():
     try:
         files_list = supabase_admin.storage.from_("raw_faces").list("encodings")
 
-        target_file = None
+        target_file     = None
         target_metadata = None
         for f in files_list:
             if f['name'].endswith('.pkl') or f['name'].endswith('.pickle'):
-                target_file = f['name']
+                target_file     = f['name']
                 target_metadata = f
                 break
 
@@ -121,17 +122,17 @@ async def fetch_and_update_encodings():
             return
 
         print(f"⬇️ New version found ({current_version}). Downloading {target_file}...")
-        file_path = f"encodings/{target_file}"
+        file_path  = f"encodings/{target_file}"
         data_bytes = supabase_admin.storage.from_("raw_faces").download(file_path)
-        data = pickle.loads(data_bytes)
+        data       = pickle.loads(data_bytes)
 
         if "names" in data and "encodings" in data:
-            names = data["names"]
-            encodings = data["encodings"]
+            names              = data["names"]
+            encodings          = data["encodings"]
             new_knowledge_base = {str(name): enc for name, enc in zip(names, encodings)}
             update_face_bank(new_knowledge_base)
             last_file_version = current_version
-            last_update_time = time.time()
+            last_update_time  = time.time()
             print(f"✅ Loaded {len(new_knowledge_base)} students. RAM Updated.")
         else:
             print(f"❌ Format Error in {target_file}")
@@ -151,7 +152,7 @@ async def build_encodings_from_storage():
     print("🔨 Building encodings from storage...")
 
     try:
-        inst_resp = supabase_admin.table("institutions").select("id").execute()
+        inst_resp          = supabase_admin.table("institutions").select("id").execute()
         known_institutions = [r["id"] for r in inst_resp.data]
         print(f"📋 Found institutions: {known_institutions}")
     except Exception as e:
@@ -169,7 +170,7 @@ async def build_encodings_from_storage():
             continue
 
         for folder in student_folders:
-            student_id = folder["name"]
+            student_id  = folder["name"]
             folder_path = f"{institution}/{student_id}"
 
             try:
@@ -222,6 +223,7 @@ async def build_encodings_from_storage():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 Server Starting...")
+    preload_models()                   # ✅ preload face + antispoof models at startup
     await fetch_and_update_encodings()
     await preload_student_cache()
     yield
@@ -248,7 +250,6 @@ def get_student_name(student_id: str) -> str:
     """Instant lookup from RAM cache — no DB call."""
     if student_id in _name_cache:
         return _name_cache[student_id]
-    # Fallback to DB if not in cache (new student registered after startup)
     if not supabase_admin:
         return student_id
     try:
@@ -300,7 +301,7 @@ async def manual_refresh(_=Depends(check_admin)):
 async def verify_image(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    user=Depends(verify_supabase_token),  # ✅ requires valid Supabase session
+    user=Depends(verify_supabase_token),
 ):
     global last_update_time
 
@@ -310,8 +311,8 @@ async def verify_image(
 
     try:
         contents = await file.read()
-        nparr = np.frombuffer(contents, np.uint8)
-        img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        nparr    = np.frombuffer(contents, np.uint8)
+        img_bgr  = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     except:
         raise HTTPException(status_code=400, detail="Invalid image")
 
@@ -338,12 +339,24 @@ async def verify_image(
         real_name  = get_student_name(student_id)
         background_tasks.add_task(log_attendance, student_id, confidence, "success")
         return {
-            "status":     "success",
-            "student_id": student_id,
-            "name":       real_name,
-            "confidence": round(confidence, 2),
-            "bbox":       bbox_list,
-            "kps":        kps_list,
+            "status":         "success",
+            "student_id":     student_id,
+            "name":           real_name,
+            "confidence":     round(confidence, 2),
+            "liveness_score": result.get("liveness_score", 1.0),
+            "bbox":           bbox_list,
+            "kps":            kps_list,
+        }
+    elif status == "spoof":
+        # ✅ Log spoof attempts for audit trail
+        background_tasks.add_task(log_attendance, "Unknown", 0.0, "spoof")
+        return {
+            "status":         "spoof",
+            "message":        "Spoof detected. Please use your real face.",
+            "liveness_score": result.get("liveness_score", 0.0),
+            "confidence":     0.0,
+            "bbox":           bbox_list,
+            "kps":            kps_list,
         }
     else:
         background_tasks.add_task(log_attendance, "Unknown", confidence, "failed")
@@ -385,13 +398,13 @@ def get_summary(
     if not supabase_admin:
         raise HTTPException(status_code=503, detail="Supabase not configured")
     try:
-        query = supabase_admin.table("attendance_records").select("*")
+        query         = supabase_admin.table("attendance_records").select("*")
         if institution_id:
             query = query.eq("institution_id", institution_id)
-        rows = query.execute().data
+        rows          = query.execute().data
         total_present = sum(1 for r in rows if r.get("verified") == "success")
         total_absent  = sum(1 for r in rows if r.get("verified") == "failed")
-        by_student = {}
+        by_student    = {}
         for r in rows:
             sid = r.get("student_id") or "Unknown"
             if r.get("verified") == "success":
