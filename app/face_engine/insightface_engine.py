@@ -52,7 +52,7 @@ def get_antispoof():
 
     try:
         from insightface.model_zoo import get_model
-        _antispoof = get_model("buffalo_l", allowed_modules=["antispoof"])
+        _antispoof = get_model("antispoof_bas_1n")
         _antispoof.prepare(ctx_id=-1)
         print("✅ Anti-spoof model loaded.")
     except Exception as e:
