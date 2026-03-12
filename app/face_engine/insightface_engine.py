@@ -4,6 +4,7 @@ import numpy as np
 from pathlib import Path
 from typing import List, Optional, Tuple
 import cv2
+import time
 
 # -----------------------------
 # Path Configuration
@@ -140,23 +141,29 @@ def check_liveness(img_bgr: np.ndarray, face) -> Tuple[bool, float]:
         print(f"⚠️ Liveness check error: {e}. Defaulting to live.")
         return True, 1.0
 
-
 def verify_face(img_bgr: np.ndarray, threshold: float = DEFAULT_THRESHOLD) -> Optional[dict]:
     global _CACHE_ENCODINGS, _CACHE_IDS
 
-    # 1. Safety check
     if _CACHE_ENCODINGS.size == 0:
         return {"status": "error", "message": "Server is warming up... Try again in 10s."}
 
-    # 2. Get AI model + detect faces
     app = get_insightface()
+
+    t1 = time.time()
     faces = app.get(img_bgr)
+    t2 = time.time()
 
     if not faces:
         return None
 
-    # 3. Get largest face
     face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+
+    t3 = time.time()
+    is_live, liveness_score = check_liveness(img_bgr, face)
+    t4 = time.time()
+
+    print(f"⏱️ Detection: {t2-t1:.2f}s | Liveness: {t4-t3:.2f}s | Total: {t4-t1:.2f}s")
+    # ... rest of function unchanged
 
     # 4. ✅ Liveness check — reject photos/screens
     is_live, liveness_score = check_liveness(img_bgr, face)
