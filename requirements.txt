@@ -9,3 +9,4 @@ insightface
 streamlit
 sqlalchemy
 psycopg2-binary
+uniface

@@ -45,15 +45,14 @@ def get_insightface(det_size=(320, 320), model_name="buffalo_s"):
 
 
 def get_antispoof():
-    """Load the InsightFace anti-spoofing model."""
+    """Load MiniFASNetV2 anti-spoofing model via uniface."""
     global _antispoof
     if _antispoof is not None:
         return _antispoof
 
     try:
-        from insightface.model_zoo import get_model
-        _antispoof = get_model("antispoof_bas_1n")
-        _antispoof.prepare(ctx_id=-1)
+        from uniface import create_spoofer
+        _antispoof = create_spoofer()  # downloads MiniFASNetV2 automatically
         print("✅ Anti-spoof model loaded.")
     except Exception as e:
         print(f"⚠️ Anti-spoof model failed to load: {e}. Liveness check disabled.")
@@ -122,7 +121,7 @@ def get_embedding(img_bgr: np.ndarray) -> Optional[np.ndarray]:
 
 def check_liveness(img_bgr: np.ndarray, face) -> Tuple[bool, float]:
     """
-    Run anti-spoofing check on a detected face.
+    Run anti-spoofing check on a detected face using uniface MiniFASNetV2.
     Returns (is_live, score) where score > LIVENESS_THRESHOLD = live person.
     Falls back to True if model not available.
     """
@@ -132,24 +131,10 @@ def check_liveness(img_bgr: np.ndarray, face) -> Tuple[bool, float]:
         return True, 1.0
 
     try:
-        bbox = face.bbox.astype(int)
-        x1, y1, x2, y2 = bbox
-        h, w = img_bgr.shape[:2]
-        pad = 20
-        x1 = max(0, x1 - pad)
-        y1 = max(0, y1 - pad)
-        x2 = min(w, x2 + pad)
-        y2 = min(h, y2 + pad)
-        face_crop = img_bgr[y1:y2, x1:x2]
-
-        if face_crop.size == 0:
-            return True, 1.0
-
-        face_crop_resized = cv2.resize(face_crop, (128, 128))
-        score = antispoof.predict(face_crop_resized)
-
-        is_live = float(score) > LIVENESS_THRESHOLD
-        return is_live, float(score)
+        bbox = face.bbox.astype(int).tolist()
+        result = antispoof.predict(img_bgr, bbox)
+        is_live = result.is_real and result.confidence > LIVENESS_THRESHOLD
+        return is_live, float(result.confidence)
 
     except Exception as e:
         print(f"⚠️ Liveness check error: {e}. Defaulting to live.")
