@@ -23,14 +23,13 @@ load_dotenv(env_path)
 # --- GLOBAL VARIABLES ---
 last_update_time = 0
 last_file_version = ""
-_name_cache: dict = {}        # student_id → name
-_institution_cache: dict = {} # student_id → institution_id
+_name_cache: dict = {}
+_institution_cache: dict = {}
 
 # --- 2. SUPABASE ---
 SUPABASE_URL         = os.getenv("SUPABASE_URL")
-SUPABASE_KEY         = os.getenv("SUPABASE_KEY")          # anon key for auth verification
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # service role key for admin ops
-ADMIN_SECRET         = os.getenv("ADMIN_SECRET", "")
+SUPABASE_KEY         = os.getenv("SUPABASE_KEY")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 supabase       = None
 supabase_admin = None
@@ -69,17 +68,31 @@ async def verify_supabase_token(authorization: str = Header(None)):
         return user_response.user
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(status_code=401, detail="Token verification failed")
 
-def check_admin(authorization: str = Header(None)):
-    """Verify admin secret for internal/dashboard endpoints."""
-    if not authorization or authorization != f"Bearer {ADMIN_SECRET}":
-        raise HTTPException(status_code=401, detail="Invalid admin secret")
+async def check_admin(authorization: str = Header(None)):
+    """Verify that the user is authenticated and is an admin."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    token = authorization.replace("Bearer ", "").strip()
+    try:
+        user_response = supabase.auth.get_user(token)
+        if not user_response or not user_response.user:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+        user_id = user_response.user.id
+        resp = supabase_admin.table("profiles").select("is_admin") \
+            .eq("id", user_id).limit(1).execute()
+        if not resp.data or not resp.data[0].get("is_admin"):
+            raise HTTPException(status_code=403, detail="Admin access required")
+        return user_response.user
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Token verification failed")
 
 # --- 5. PRELOAD STUDENT CACHE ---
 async def preload_student_cache():
-    """Load all student names + institution_ids into RAM on startup."""
     global _name_cache, _institution_cache
     if not supabase_admin:
         return
@@ -142,11 +155,6 @@ async def fetch_and_update_encodings():
 
 
 async def build_encodings_from_storage():
-    """
-    Rebuilds encodings.pkl by reading images from folder structure:
-    raw_faces/NKU/2400102415/1.jpg
-    raw_faces/MUK/2400102435/1.jpg
-    """
     if not supabase_admin:
         return
     print("🔨 Building encodings from storage...")
@@ -223,7 +231,7 @@ async def build_encodings_from_storage():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 Server Starting...")
-    preload_models()                   # ✅ preload face + antispoof models at startup
+    preload_models()
     await fetch_and_update_encodings()
     await preload_student_cache()
     yield
@@ -247,7 +255,6 @@ app.add_middleware(
 
 # --- 9. HELPER FUNCTIONS ---
 def get_student_name(student_id: str) -> str:
-    """Instant lookup from RAM cache — no DB call."""
     if student_id in _name_cache:
         return _name_cache[student_id]
     if not supabase_admin:
@@ -264,7 +271,6 @@ def get_student_name(student_id: str) -> str:
     return student_id
 
 def get_institution_id(student_id: str) -> str | None:
-    """Instant lookup from RAM cache — no DB call."""
     return _institution_cache.get(student_id)
 
 def log_attendance(student_id: str, confidence: float, status: str):
@@ -290,9 +296,12 @@ def log_attendance(student_id: str, confidence: float, status: str):
 def health_check():
     return {"status": "online"}
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 @app.post("/refresh")
-async def manual_refresh(_=Depends(check_admin)):
-    """Refresh encodings — admin only."""
+async def manual_refresh(user=Depends(check_admin)):
     await fetch_and_update_encodings()
     await preload_student_cache()
     return {"status": "success"}
@@ -348,7 +357,6 @@ async def verify_image(
             "kps":            kps_list,
         }
     elif status == "spoof":
-        # ✅ Log spoof attempts for audit trail
         background_tasks.add_task(log_attendance, "Unknown", 0.0, "spoof")
         return {
             "status":         "spoof",
@@ -369,13 +377,13 @@ async def verify_image(
         }
 
 
-# --- 11. ADMIN ENDPOINTS (for Streamlit dashboard) ---
+# --- 11. ADMIN ENDPOINTS ---
 
 @app.get("/admin/attendance-records")
-def get_attendance_records(
+async def get_attendance_records(
     institution_id: str = None,
     limit: int = 500,
-    _=Depends(check_admin),
+    user=Depends(check_admin),
 ):
     if not supabase_admin:
         raise HTTPException(status_code=503, detail="Supabase not configured")
@@ -391,9 +399,9 @@ def get_attendance_records(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/admin/attendance_summary")
-def get_summary(
+async def get_summary(
     institution_id: str = None,
-    _=Depends(check_admin),
+    user=Depends(check_admin),
 ):
     if not supabase_admin:
         raise HTTPException(status_code=503, detail="Supabase not configured")
@@ -418,9 +426,9 @@ def get_summary(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/students")
-def get_students(
+async def get_students(
     institution_id: str = None,
-    _=Depends(check_admin),
+    user=Depends(check_admin),
 ):
     if not supabase_admin:
         raise HTTPException(status_code=503, detail="Supabase not configured")
@@ -434,7 +442,7 @@ def get_students(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/admin/sync-encodings")
-async def sync_encodings(_=Depends(check_admin)):
+async def sync_encodings(user=Depends(check_admin)):
     try:
         await build_encodings_from_storage()
         await fetch_and_update_encodings()
