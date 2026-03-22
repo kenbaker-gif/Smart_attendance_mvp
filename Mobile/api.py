@@ -125,14 +125,14 @@ async def fetch_and_update_encodings():
 
         if not target_file:
             print("⚠️ Refresh: No .pkl file found.")
-            return
+            return False  # ✅ return False so lifespan knows to rebuild
 
         current_version = target_metadata.get('updated_at', '')
 
         if current_version and current_version == last_file_version:
             print("✅ File is unchanged. Skipping download.")
             last_update_time = time.time()
-            return
+            return True
 
         print(f"⬇️ New version found ({current_version}). Downloading {target_file}...")
         file_path  = f"encodings/{target_file}"
@@ -147,11 +147,14 @@ async def fetch_and_update_encodings():
             last_file_version = current_version
             last_update_time  = time.time()
             print(f"✅ Loaded {len(new_knowledge_base)} students. RAM Updated.")
+            return True
         else:
             print(f"❌ Format Error in {target_file}")
+            return False
 
     except Exception as e:
         print(f"❌ Refresh Error: {e}")
+        return False
 
 
 async def build_encodings_from_storage():
@@ -225,17 +228,26 @@ async def build_encodings_from_storage():
         update_face_bank(kb)
         print("✅ RAM updated")
     else:
-        print("⚠️ No embeddings generated")
+        print("⚠️ No embeddings generated — no face images found in storage")
 
 # --- 7. LIFESPAN ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 Server Starting...")
     preload_models()
-    await fetch_and_update_encodings()
+
+    # ✅ Try to load existing encodings
+    found = await fetch_and_update_encodings()
+
+    # ✅ If no .pkl found — rebuild from scratch automatically
+    if not found:
+        print("⚠️ No encodings found — rebuilding from raw face images...")
+        await build_encodings_from_storage()
+        await fetch_and_update_encodings()
+
     await preload_student_cache()
     yield
-    print("🛑 Server Shutting Down...")
+    print("🛑 Server Shutting Down.")
 
 # --- 8. APP ---
 app = FastAPI(title="Attendance API", lifespan=lifespan)
