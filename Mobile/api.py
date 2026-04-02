@@ -54,7 +54,18 @@ except ImportError:
     def update_face_bank(data): pass
     def preload_models(): pass
 
-# --- 4. AUTH DEPENDENCIES ---
+# --- 4. HELPERS ---
+
+def _bool_flag(value):
+    """Safely coerce any truthy DB value to a Python bool."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in ("true", "1", "yes")
+    return bool(value)
+
+
+# --- 5. AUTH DEPENDENCIES ---
 
 async def verify_supabase_token(authorization: str = Header(None)):
     """Verify that the request comes from a valid authenticated Supabase user."""
@@ -72,7 +83,12 @@ async def verify_supabase_token(authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="Token verification failed")
 
 async def check_admin(authorization: str = Header(None)):
-    """Verify that the user is authenticated and is an admin."""
+    """
+    Verify that the user is authenticated and is an admin.
+    Accepts: is_admin=True OR is_super_admin=True OR role in ('admin', 'super_admin').
+    This matches the main backend's profile schema where new admins are inserted
+    with role='admin' and is_admin=True.
+    """
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
     token = authorization.replace("Bearer ", "").strip()
@@ -81,17 +97,31 @@ async def check_admin(authorization: str = Header(None)):
         if not user_response or not user_response.user:
             raise HTTPException(status_code=401, detail="Invalid or expired token")
         user_id = user_response.user.id
-        resp = supabase_admin.table("profiles").select("is_admin") \
+
+        # ✅ Select is_admin, is_super_admin, AND role — any one grants access
+        resp = supabase_admin.table("profiles") \
+            .select("is_admin, is_super_admin, role") \
             .eq("id", user_id).limit(1).execute()
-        if not resp.data or not resp.data[0].get("is_admin"):
+
+        profile = resp.data[0] if resp.data else None
+        if not profile:
+            raise HTTPException(status_code=403, detail="Profile not found")
+
+        is_admin       = _bool_flag(profile.get("is_admin"))
+        is_super_admin = _bool_flag(profile.get("is_super_admin"))
+        role           = profile.get("role", "")
+
+        if not (is_admin or is_super_admin or role in ("admin", "super_admin")):
             raise HTTPException(status_code=403, detail="Admin access required")
+
         return user_response.user
     except HTTPException:
         raise
-    except Exception:
+    except Exception as e:
+        print(f"[check_admin] error: {e!r}")
         raise HTTPException(status_code=401, detail="Token verification failed")
 
-# --- 5. PRELOAD STUDENT CACHE ---
+# --- 6. PRELOAD STUDENT CACHE ---
 async def preload_student_cache():
     global _name_cache, _institution_cache
     if not supabase_admin:
@@ -105,7 +135,7 @@ async def preload_student_cache():
     except Exception as e:
         print(f"❌ Cache preload failed: {e}")
 
-# --- 6. SMART ENCODINGS REFRESH ---
+# --- 7. SMART ENCODINGS REFRESH ---
 async def fetch_and_update_encodings():
     global last_update_time, last_file_version
     if not supabase_admin:
@@ -230,7 +260,7 @@ async def build_encodings_from_storage():
     else:
         print("⚠️ No embeddings generated — no face images found in storage")
 
-# --- 7. LIFESPAN ---
+# --- 8. LIFESPAN ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 Server Starting...")
@@ -249,7 +279,7 @@ async def lifespan(app: FastAPI):
     yield
     print("🛑 Server Shutting Down.")
 
-# --- 8. APP ---
+# --- 9. APP ---
 app = FastAPI(title="Attendance API", lifespan=lifespan)
 
 app.add_middleware(
@@ -265,7 +295,7 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
-# --- 9. HELPER FUNCTIONS ---
+# --- 10. HELPER FUNCTIONS ---
 def get_student_name(student_id: str) -> str:
     if student_id in _name_cache:
         return _name_cache[student_id]
@@ -302,7 +332,7 @@ def log_attendance(student_id: str, confidence: float, status: str):
     except Exception as e:
         print(f"❌ Background Log Error: {e}")
 
-# --- 10. ENDPOINTS ---
+# --- 11. ENDPOINTS ---
 
 @app.get("/")
 def health_check():
@@ -389,7 +419,7 @@ async def verify_image(
         }
 
 
-# --- 11. ADMIN ENDPOINTS ---
+# --- 12. ADMIN ENDPOINTS ---
 
 @app.get("/admin/attendance-records")
 async def get_attendance_records(
@@ -455,10 +485,16 @@ async def get_students(
 
 @app.post("/admin/sync-encodings")
 async def sync_encodings(user=Depends(check_admin)):
+    """
+    Rebuild face encodings from raw storage images and reload into RAM.
+    Called automatically by the upload service after the 4th photo is uploaded.
+    Requires admin, super_admin role, or is_admin/is_super_admin flag.
+    """
     try:
         await build_encodings_from_storage()
         await fetch_and_update_encodings()
         await preload_student_cache()
         return {"success": True, "message": "Sync complete"}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        print(f"[sync-encodings] error: {e!r}")
+        raise HTTPException(status_code=500, detail=str(e))
