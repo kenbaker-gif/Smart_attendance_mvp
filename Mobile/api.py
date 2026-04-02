@@ -497,4 +497,4 @@ async def sync_encodings(user=Depends(check_admin)):
         return {"success": True, "message": "Sync complete"}
     except Exception as e:
         print(f"[sync-encodings] error: {e!r}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))k
