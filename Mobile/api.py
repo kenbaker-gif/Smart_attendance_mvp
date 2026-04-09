@@ -1,6 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends, Header
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends, Header, Form
 import cv2
 import numpy as np
 import os
@@ -11,6 +11,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from supabase import create_client
 from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional
 
 # --- 1. PATH SETUP ---
 current_file = Path(__file__).resolve()
@@ -86,8 +87,6 @@ async def check_admin(authorization: str = Header(None)):
     """
     Verify that the user is authenticated and is an admin.
     Accepts: is_admin=True OR is_super_admin=True OR role in ('admin', 'super_admin').
-    This matches the main backend's profile schema where new admins are inserted
-    with role='admin' and is_admin=True.
     """
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
@@ -98,7 +97,6 @@ async def check_admin(authorization: str = Header(None)):
             raise HTTPException(status_code=401, detail="Invalid or expired token")
         user_id = user_response.user.id
 
-        # ✅ Select is_admin, is_super_admin, AND role — any one grants access
         resp = supabase_admin.table("profiles") \
             .select("is_admin, is_super_admin, role") \
             .eq("id", user_id).limit(1).execute()
@@ -155,7 +153,7 @@ async def fetch_and_update_encodings():
 
         if not target_file:
             print("⚠️ Refresh: No .pkl file found.")
-            return False  # ✅ return False so lifespan knows to rebuild
+            return False
 
         current_version = target_metadata.get('updated_at', '')
 
@@ -266,10 +264,8 @@ async def lifespan(app: FastAPI):
     print("🚀 Server Starting...")
     preload_models()
 
-    # ✅ Try to load existing encodings
     found = await fetch_and_update_encodings()
 
-    # ✅ If no .pkl found — rebuild from scratch automatically
     if not found:
         print("⚠️ No encodings found — rebuilding from raw face images...")
         await build_encodings_from_storage()
@@ -315,10 +311,13 @@ def get_student_name(student_id: str) -> str:
 def get_institution_id(student_id: str) -> str | None:
     return _institution_cache.get(student_id)
 
-def log_attendance(student_id: str, confidence: float, status: str):
+def log_attendance(student_id: str, confidence: float, status: str, institution_id: Optional[str] = None):
     if not supabase_admin:
         return
-    institution_id = get_institution_id(student_id) if status == "success" else None
+    # For success: prefer cache lookup (most accurate), fall back to passed value
+    # For spoof/failed: use institution_id passed from the verify session
+    if status == "success":
+        institution_id = get_institution_id(student_id) or institution_id
     data = {
         "student_id":       student_id if status == "success" else None,
         "confidence":       float(confidence),
@@ -352,6 +351,7 @@ async def manual_refresh(user=Depends(check_admin)):
 async def verify_image(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    institution_id: Optional[str] = Form(None),
     user=Depends(verify_supabase_token),
 ):
     global last_update_time
@@ -388,7 +388,7 @@ async def verify_image(
     if status == "success":
         student_id = result.get("student_id", "Unknown")
         real_name  = get_student_name(student_id)
-        background_tasks.add_task(log_attendance, student_id, confidence, "success")
+        background_tasks.add_task(log_attendance, student_id, confidence, "success", institution_id)
         return {
             "status":         "success",
             "student_id":     student_id,
@@ -399,7 +399,7 @@ async def verify_image(
             "kps":            kps_list,
         }
     elif status == "spoof":
-        background_tasks.add_task(log_attendance, "Unknown", 0.0, "spoof")
+        background_tasks.add_task(log_attendance, "Unknown", 0.0, "spoof", institution_id)
         return {
             "status":         "spoof",
             "message":        "Spoof detected. Please use your real face.",
@@ -409,7 +409,7 @@ async def verify_image(
             "kps":            kps_list,
         }
     else:
-        background_tasks.add_task(log_attendance, "Unknown", confidence, "failed")
+        background_tasks.add_task(log_attendance, "Unknown", confidence, "failed", institution_id)
         return {
             "status":     "failed",
             "message":    message,
