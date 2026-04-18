@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
+from collections import defaultdict
 
 # --- 1. PATH SETUP ---
 current_file = Path(__file__).resolve()
@@ -125,6 +126,8 @@ async def preload_student_cache():
     if not supabase_admin:
         return
     try:
+        _name_cache.clear()
+        _institution_cache.clear()
         resp = supabase_admin.table("students").select("id, name, institution_id").execute()
         for s in resp.data:
             _name_cache[s['id']]        = s.get('name', s['id'])
@@ -137,7 +140,7 @@ async def preload_student_cache():
 async def fetch_and_update_encodings():
     global last_update_time, last_file_version
     if not supabase_admin:
-        return
+        return False
 
     print("🔄 Smart-Refresh: Checking if file has changed in Storage...")
     try:
@@ -186,6 +189,7 @@ async def fetch_and_update_encodings():
 
 
 async def build_encodings_from_storage():
+    global last_file_version, last_update_time
     if not supabase_admin:
         return
     print("🔨 Building encodings from storage...")
@@ -198,8 +202,8 @@ async def build_encodings_from_storage():
         print(f"⚠️ Could not fetch institutions, falling back: {e}")
         known_institutions = ["NKU", "MUK"]
 
-    all_names     = []
-    all_encodings = []
+    # Collect all embeddings per student (multiple photos)
+    student_embeddings: dict = defaultdict(list)
 
     for institution in known_institutions:
         try:
@@ -232,14 +236,21 @@ async def build_encodings_from_storage():
                     from app.face_engine.insightface_engine import get_embedding
                     embedding = get_embedding(img_bgr)
                     if embedding is not None:
-                        all_names.append(student_id)
-                        all_encodings.append(embedding)
+                        student_embeddings[student_id].append(embedding)
                         print(f"   ✅ {institution}/{student_id}/{f['name']}")
                 except Exception as e:
                     print(f"   ❌ {folder_path}/{f['name']}: {e}")
 
-    if all_names:
-        pkl_data  = {"names": all_names, "encodings": all_encodings}
+    if student_embeddings:
+        # Average all embeddings per student for best accuracy
+        kb = {}
+        for student_id, embs in student_embeddings.items():
+            avg_emb = np.mean(embs, axis=0)
+            avg_emb = avg_emb / (np.linalg.norm(avg_emb) + 1e-10)
+            kb[student_id] = avg_emb
+
+        # Save to storage
+        pkl_data  = {"names": list(kb.keys()), "encodings": list(kb.values())}
         pkl_bytes = pickle.dumps(pkl_data)
 
         try:
@@ -250,11 +261,23 @@ async def build_encodings_from_storage():
             "encodings/encodings_insightface.pkl",
             pkl_bytes,
         )
-        print(f"✅ Saved {len(all_names)} embeddings to storage")
+        print(f"✅ Saved {len(kb)} students to storage")
 
-        kb = {str(n): e for n, e in zip(all_names, all_encodings)}
+        # Update RAM directly — do NOT call fetch_and_update_encodings after this
         update_face_bank(kb)
         print("✅ RAM updated")
+
+        # Mark version so the 5-min timer refresh skips re-downloading this same pkl
+        try:
+            files_list = supabase_admin.storage.from_("raw_faces").list("encodings")
+            for f in files_list:
+                if f['name'].endswith('.pkl'):
+                    last_file_version = f.get('updated_at', '')
+                    break
+        except:
+            pass
+        last_update_time = time.time()
+
     else:
         print("⚠️ No embeddings generated — no face images found in storage")
 
@@ -264,12 +287,8 @@ async def lifespan(app: FastAPI):
     print("🚀 Server Starting...")
     preload_models()
 
-    found = await fetch_and_update_encodings()
-
-    if not found:
-        print("⚠️ No encodings found — rebuilding from raw face images...")
-        await build_encodings_from_storage()
-
+    # Always build from source of truth (storage images), never trust cached pkl on startup
+    await build_encodings_from_storage()
     await preload_student_cache()
     yield
     print("🛑 Server Shutting Down.")
@@ -313,10 +332,18 @@ def get_institution_id(student_id: str) -> str | None:
 def log_attendance(student_id: str, confidence: float, status: str, institution_id: Optional[str] = None):
     if not supabase_admin:
         return
-    # For success: prefer cache lookup (most accurate), fall back to passed value
-    # For spoof/failed: use institution_id passed from the verify session
     if status == "success":
         institution_id = get_institution_id(student_id) or institution_id
+        # Guard: confirm student still exists in DB before inserting
+        try:
+            check = supabase_admin.table("students").select("id").eq("id", student_id).limit(1).execute()
+            if not check.data:
+                print(f"⚠️ Skipped log: student {student_id} not in DB (stale embedding)")
+                return
+        except Exception as e:
+            print(f"⚠️ Student existence check failed: {e}")
+            return
+
     data = {
         "student_id":       student_id if status == "success" else None,
         "confidence":       float(confidence),
@@ -484,6 +511,10 @@ async def get_students(
 
 @app.post("/admin/sync-encodings")
 async def sync_encodings(user=Depends(check_admin)):
+    """
+    Rebuild face encodings from raw storage images and reload into RAM.
+    Called automatically by the upload service after the 4th photo is uploaded.
+    """
     try:
         await build_encodings_from_storage()
         await preload_student_cache()
