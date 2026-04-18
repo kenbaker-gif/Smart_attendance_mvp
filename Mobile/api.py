@@ -485,14 +485,8 @@ async def get_students(
 
 @app.post("/admin/sync-encodings")
 async def sync_encodings(user=Depends(check_admin)):
-    """
-    Rebuild face encodings from raw storage images and reload into RAM.
-    Called automatically by the upload service after the 4th photo is uploaded.
-    Requires admin, super_admin role, or is_admin/is_super_admin flag.
-    """
     try:
         await build_encodings_from_storage()
-        await fetch_and_update_encodings()
         await preload_student_cache()
         return {"success": True, "message": "Sync complete"}
     except Exception as e:
