@@ -269,7 +269,6 @@ async def lifespan(app: FastAPI):
     if not found:
         print("⚠️ No encodings found — rebuilding from raw face images...")
         await build_encodings_from_storage()
-        await fetch_and_update_encodings()
 
     await preload_student_cache()
     yield
