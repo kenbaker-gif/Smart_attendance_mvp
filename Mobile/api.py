@@ -329,7 +329,7 @@ def get_student_name(student_id: str) -> str:
 def get_institution_id(student_id: str) -> str | None:
     return _institution_cache.get(student_id)
 
-def log_attendance(student_id: str, confidence: float, status: str, institution_id: Optional[str] = None):
+def log_attendance(student_id: str, confidence: float, status: str, institution_id: Optional[str] = None, course_unit_id=None):
     if not supabase_admin:
         return
     if status == "success":
@@ -350,6 +350,7 @@ def log_attendance(student_id: str, confidence: float, status: str, institution_
         "detection_method": "mobile_api",
         "verified":         status,
         "institution_id":   institution_id,
+        "course_unit_id":   course_unit_id,
     }
     try:
         supabase_admin.table('attendance_records').insert(data).execute()
@@ -378,6 +379,7 @@ async def verify_image(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     institution_id: Optional[str] = Form(None),
+    course_unit_id: Optional[str] = Form(None),
     user=Depends(verify_supabase_token),
 ):
     global last_update_time
@@ -414,7 +416,7 @@ async def verify_image(
     if status == "success":
         student_id = result.get("student_id", "Unknown")
         real_name  = get_student_name(student_id)
-        background_tasks.add_task(log_attendance, student_id, confidence, "success", institution_id)
+        background_tasks.add_task(log_attendance, student_id, confidence, "success", institution_id, course_unit_id)
         return {
             "status":         "success",
             "student_id":     student_id,
@@ -425,7 +427,7 @@ async def verify_image(
             "kps":            kps_list,
         }
     elif status == "spoof":
-        background_tasks.add_task(log_attendance, "Unknown", 0.0, "spoof", institution_id)
+        background_tasks.add_task(log_attendance, "Unknown", 0.0, "spoof", institution_id, course_unit_id)
         return {
             "status":         "spoof",
             "message":        "Spoof detected. Please use your real face.",
@@ -435,7 +437,7 @@ async def verify_image(
             "kps":            kps_list,
         }
     else:
-        background_tasks.add_task(log_attendance, "Unknown", confidence, "failed", institution_id)
+        background_tasks.add_task(log_attendance, "Unknown", confidence, "failed", institution_id, course_unit_id)
         return {
             "status":     "failed",
             "message":    message,
