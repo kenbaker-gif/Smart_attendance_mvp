@@ -53,3 +53,5 @@ secrets.env
 Thumbs.db
 
 Dockerfile.fix
+
+supabase

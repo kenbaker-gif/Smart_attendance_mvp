@@ -286,9 +286,9 @@ async def build_encodings_from_storage():
 async def lifespan(app: FastAPI):
     print("🚀 Server Starting...")
     preload_models()
-
-    # Always build from source of truth (storage images), never trust cached pkl on startup
-    await build_encodings_from_storage()
+    loaded = await fetch_and_update_encodings()  # smart: skips if pkl unchanged
+    if not loaded:
+        await build_encodings_from_storage()     # only if no pkl exists yet
     await preload_student_cache()
     yield
     print("🛑 Server Shutting Down.")
