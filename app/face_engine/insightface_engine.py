@@ -1,5 +1,6 @@
 import os
 import pickle
+import threading
 import numpy as np
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -24,6 +25,24 @@ _antispoof = None
 _CACHE_ENCODINGS = np.array([])
 _CACHE_IDS = []
 
+# FIX 2 (Process-level race condition): A threading lock that ensures only ONE
+# thread within a worker process can initialise a model at a time.
+#
+# WHY THIS IS NEEDED (even with the Dockerfile fix):
+# Each of the 8 uvicorn workers is a separate OS process, so they don't share
+# this lock with each other — that's why Fix 1 (Dockerfile pre-download) is
+# the primary guard against cross-process races.
+#
+# However, within a single worker, uvicorn can run multiple async tasks
+# concurrently. If two requests arrive at the same worker before _app is
+# initialised, both coroutines could pass the `if _app is not None` check
+# simultaneously and call FaceAnalysis() twice. The lock stops that.
+#
+# Together, Fix 1 + Fix 2 cover both levels:
+#   Fix 1 → no two CONTAINERS/PROCESSES race to download the model zip
+#   Fix 2 → no two THREADS within one process race to call FaceAnalysis()
+_model_lock = threading.Lock()
+
 
 def get_insightface(det_size=(320, 320), model_name="buffalo_s"):
     """
@@ -32,37 +51,59 @@ def get_insightface(det_size=(320, 320), model_name="buffalo_s"):
     Cuts detection time ~60% with no accuracy loss for verification.
     """
     global _app
+
+    # Fast path: model already loaded, no lock needed.
+    # This is the common case for every request after startup.
     if _app is not None:
         return _app
 
-    try:
-        from insightface.app import FaceAnalysis
-    except ImportError:
-        raise ImportError("Please run: pip install insightface onnxruntime")
+    # Slow path: model not yet loaded. Acquire the lock so only one thread
+    # runs FaceAnalysis() — all other threads will wait here and then take
+    # the fast path above once the first thread finishes.
+    with _model_lock:
+        # Double-check after acquiring the lock. Another thread may have
+        # already finished initialising _app while we were waiting.
+        if _app is not None:
+            return _app
 
-    _app = FaceAnalysis(
-        name=model_name,
-        allowed_modules=["detection", "recognition"],  # ✅ skip landmarks + genderage
-        providers=["CPUExecutionProvider"],
-    )
-    _app.prepare(ctx_id=-1, det_size=det_size)
-    print("✅ FaceAnalysis model loaded (det_size=320x320, detection+recognition only).")
+        try:
+            from insightface.app import FaceAnalysis
+        except ImportError:
+            raise ImportError("Please run: pip install insightface onnxruntime")
+
+        _app = FaceAnalysis(
+            name=model_name,
+            allowed_modules=["detection", "recognition"],  # ✅ skip landmarks + genderage
+            providers=["CPUExecutionProvider"],
+        )
+        _app.prepare(ctx_id=-1, det_size=det_size)
+        print("✅ FaceAnalysis model loaded (det_size=320x320, detection+recognition only).")
+
     return _app
 
 
 def get_antispoof():
     """Load MiniFASNetV2 anti-spoofing model via uniface."""
     global _antispoof
+
+    # Fast path: model already loaded.
     if _antispoof is not None:
         return _antispoof
 
-    try:
-        from uniface import create_spoofer
-        _antispoof = create_spoofer()  # downloads MiniFASNetV2 automatically
-        print("✅ Anti-spoof model loaded.")
-    except Exception as e:
-        print(f"⚠️ Anti-spoof model failed to load: {e}. Liveness check disabled.")
-        _antispoof = None
+    # Slow path: same double-checked locking pattern as get_insightface().
+    # Prevents two threads from both calling create_spoofer() simultaneously.
+    with _model_lock:
+        if _antispoof is not None:
+            return _antispoof
+
+        try:
+            from uniface import create_spoofer
+            _antispoof = create_spoofer()  # downloads MiniFASNetV2 automatically
+            print("✅ Anti-spoof model loaded.")
+        except Exception as e:
+            print(f"⚠️ Anti-spoof model failed to load: {e}. Liveness check disabled.")
+            # Set to a sentinel so we don't retry on every request
+            _antispoof = None
 
     return _antispoof
 

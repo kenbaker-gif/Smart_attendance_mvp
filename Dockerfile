@@ -45,7 +45,26 @@ RUN mkdir -p /app/app/streamlit/data
 # Copy your source code last (since it changes most often)
 COPY . .
 
+# FIX 1 (Container-level race condition): Pre-download the InsightFace buffalo_s
+# model weights at IMAGE BUILD TIME, not at container startup.
+#
+# WHY THIS IS NEEDED:
+# Railway runs 8 worker processes (--workers 8). When the container starts,
+# all 8 workers call preload_models() almost simultaneously. Each one checks
+# if /root/.insightface/models/buffalo_s exists, sees it doesn't, and races
+# to create it and download the zip. The first one wins; the other 7 crash
+# with: FileExistsError: [Errno 17] File exists: '.../buffalo_s'
+#
+# By downloading during docker build, the directory already exists on disk
+# when the container starts. All 8 workers find it immediately — no download,
+# no race, no crash. This also makes cold starts faster.
+RUN python3 -c "\
+from insightface.app import FaceAnalysis; \
+app = FaceAnalysis(name='buffalo_s', root='/root/.insightface', allowed_modules=['detection', 'recognition']); \
+print('buffalo_s model pre-downloaded successfully.')"
+
 # Pre-download uniface antispoof model weights at build time
+# (Same reasoning: avoid all workers racing to download this at startup)
 RUN python3 -c "from uniface import create_spoofer; create_spoofer()"
 
 # EXPOSE is optional for Railway but good for documentation
