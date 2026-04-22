@@ -1,74 +1,135 @@
-# --- STAGE 1: BUILDER ---
-# Using miniconda to build the heavy environment
+# =============================================================================
+# STAGE 1: BUILDER
+# =============================================================================
+# We use a full miniconda image here to compile heavy packages like InsightFace
+# and OpenCV. The compiled environment is then copied into a clean runtime
+# image, keeping the final image lean.
 FROM continuumio/miniconda3:latest AS builder
 WORKDIR /app
 
-# Install build tools for packages like InsightFace/OpenCV
+# Install C/C++ build tools needed to compile InsightFace, OpenCV, and other
+# packages that have native extensions.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy only requirements first to leverage Docker cache
+# Copy requirements first. Docker caches this layer — if requirements.txt
+# hasn't changed, the expensive conda/pip install below is skipped on rebuild.
 COPY requirements.txt .
 
-# Create the environment and install dependencies
-# Note: student_env is the name you used previously
+# Build the Python environment.
+# - opencv and onnxruntime come from conda-forge for better binary compatibility.
+# - Everything else comes from pip.
+# - conda clean removes package cache to reduce layer size.
 RUN conda create -n student_env python=3.11 -y && \
     conda install -n student_env -c conda-forge opencv onnxruntime -y --quiet && \
     /opt/conda/envs/student_env/bin/pip install --no-cache-dir -r requirements.txt && \
     conda clean -afy
 
-# --- STAGE 2: FINAL RUNTIME ---
+
+# =============================================================================
+# STAGE 2: RUNTIME
+# =============================================================================
 FROM continuumio/miniconda3:latest
 WORKDIR /app
 
-# Install system-level dependencies for OpenCV/InsightFace
+# Minimal system libraries required at runtime by OpenCV and InsightFace.
+# libgl1        → OpenCV needs libGL.so.1 for image processing
+# libglib2.0-0  → OpenCV needs libgobject / glib at runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy only the built environment from the builder stage
+# Bring in the fully-built conda environment from the builder stage.
+# Nothing else from the builder (build tools, cache) comes with it.
 COPY --from=builder /opt/conda/envs/student_env /opt/conda/envs/student_env
 
-# Set environment variables
+# -----------------------------------------------------------------------------
+# Environment variables
+# -----------------------------------------------------------------------------
 ENV PATH="/opt/conda/envs/student_env/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
-# Default port for local testing, Railway will override this
+
+# FIX 3 (OpenBLAS thread explosion):
+# OpenBLAS (used internally by numpy) defaults to spawning 32 threads per
+# process. With 4 uvicorn workers that's 4 × 32 = 128 threads all trying to
+# spawn at startup, which exhausts Railway's container thread limit and kills
+# workers with: pthread_create failed ... Resource temporarily unavailable
+#
+# Setting this to 1 means each worker uses a single OpenBLAS thread.
+# There is no meaningful performance loss — the real bottleneck in FaceAttend
+# is ONNX/InsightFace inference, not numpy cosine similarity math.
+ENV OPENBLAS_NUM_THREADS=1
+
+# Same fix applied to other common BLAS/threading backends in case the
+# conda environment resolves to one of these instead of OpenBLAS.
+ENV OMP_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+
+# Default port for local testing. Railway overrides this at runtime.
 ENV PORT=8000
 
-# Create necessary directories for your smart attendance system
+# Create the data directory your app expects for encodings etc.
 RUN mkdir -p /app/app/streamlit/data
 
-# Copy your source code last (since it changes most often)
+# Copy source code last — it changes most often, so keeping it at the bottom
+# means Docker can reuse all the expensive layers above on most rebuilds.
 COPY . .
 
-# FIX 1 (Container-level race condition): Pre-download the InsightFace buffalo_s
-# model weights at IMAGE BUILD TIME, not at container startup.
+# -----------------------------------------------------------------------------
+# FIX 1 (Container-level race condition — InsightFace buffalo_s model):
+# Pre-download the InsightFace buffalo_s weights at IMAGE BUILD TIME.
 #
 # WHY THIS IS NEEDED:
-# Railway runs 8 worker processes (--workers 8). When the container starts,
-# all 8 workers call preload_models() almost simultaneously. Each one checks
-# if /root/.insightface/models/buffalo_s exists, sees it doesn't, and races
-# to create it and download the zip. The first one wins; the other 7 crash
-# with: FileExistsError: [Errno 17] File exists: '.../buffalo_s'
+# uvicorn spawns N worker processes, and each calls preload_models() almost
+# simultaneously at startup. Without this, every worker races to:
+#   1. Check if /root/.insightface/models/buffalo_s exists  → it doesn't
+#   2. Call os.makedirs() to create it
+#   3. Download buffalo_s.zip from GitHub
 #
-# By downloading during docker build, the directory already exists on disk
-# when the container starts. All 8 workers find it immediately — no download,
-# no race, no crash. This also makes cold starts faster.
+# The first worker to finish makedirs() wins. All others crash with:
+#   FileExistsError: [Errno 17] File exists: '.../buffalo_s'
+#
+# By downloading during docker build, the directory and weights are already
+# on disk when the container starts. Every worker finds them immediately —
+# no download, no race, no crash. Cold starts are also faster as a bonus.
+# -----------------------------------------------------------------------------
 RUN python3 -c "\
 from insightface.app import FaceAnalysis; \
-app = FaceAnalysis(name='buffalo_s', root='/root/.insightface', allowed_modules=['detection', 'recognition']); \
-print('buffalo_s model pre-downloaded successfully.')"
+app = FaceAnalysis( \
+    name='buffalo_s', \
+    root='/root/.insightface', \
+    allowed_modules=['detection', 'recognition'] \
+); \
+print('✅ buffalo_s model pre-downloaded successfully.')"
 
-# Pre-download uniface antispoof model weights at build time
-# (Same reasoning: avoid all workers racing to download this at startup)
-RUN python3 -c "from uniface import create_spoofer; create_spoofer()"
+# Pre-download the uniface MiniFASNetV2 anti-spoofing weights at build time.
+# Same reasoning as above — avoids all workers racing to download at startup.
+RUN python3 -c "\
+from uniface import create_spoofer; \
+create_spoofer(); \
+print('✅ Anti-spoof model pre-downloaded successfully.')"
 
-# EXPOSE is optional for Railway but good for documentation
 EXPOSE 8000
 
-# THE FIX: 8 Workers for 8vCPUs to maximize parallel processing
-CMD uvicorn Mobile.api:app --host 0.0.0.0 --port $PORT --workers 8 --timeout-keep-alive 60
+# -----------------------------------------------------------------------------
+# Worker count: 4 (not 8)
+#
+# Railway's "8 vCPUs" are shared/burstable, not dedicated cores.
+# Running 8 workers means:
+#   - 8 full copies of InsightFace + anti-spoof models in RAM simultaneously
+#   - 8 × ONNX Runtime thread pools all competing for CPU
+#
+# 4 workers is the right balance for a university attendance workload:
+#   - Still handles solid concurrent request throughput
+#   - Halves memory pressure
+#   - Leaves headroom so workers don't starve each other during face inference
+# -----------------------------------------------------------------------------
+CMD uvicorn Mobile.api:app \
+    --host 0.0.0.0 \
+    --port $PORT \
+    --workers 4 \
+    --timeout-keep-alive 60
