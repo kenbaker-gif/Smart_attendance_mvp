@@ -51,5 +51,5 @@ RUN python3 -c "from uniface import create_spoofer; create_spoofer()"
 # EXPOSE is optional for Railway but good for documentation
 EXPOSE 8000
 
-# THE FIX: Using "Shell Form" (no brackets) so $PORT expands correctly
-CMD uvicorn Mobile.api:app --host 0.0.0.0 --port $PORT
+# THE FIX: 8 Workers for 8vCPUs to maximize parallel processing
+CMD uvicorn Mobile.api:app --host 0.0.0.0 --port $PORT --workers 8 --timeout-keep-alive 60

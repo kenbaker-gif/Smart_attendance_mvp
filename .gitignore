@@ -55,3 +55,7 @@ Thumbs.db
 Dockerfile.fix
 
 supabase
+
+stress_test.py
+
+test.jpg
