@@ -386,23 +386,6 @@ async def verify_image(
     global last_update_time
 
     # 1. Non-blocking Cache Refresh
-    # 1. Default course_unit_id from coordinator profile if not provided
-    if not course_unit_id and supabase_admin:
-        try:
-            prof_resp = supabase_admin.table("profiles") \
-                .select("course_unit_id, institution_id") \
-                .eq("id", user.id).limit(1).execute()
-            if prof_resp.data:
-                prof = prof_resp.data[0]
-                cu = prof.get("course_unit_id")
-                if isinstance(cu, list) and cu:
-                    course_unit_id = cu[0]
-                elif isinstance(cu, str) and cu:
-                    course_unit_id = cu
-                if not institution_id:
-                    institution_id = prof.get("institution_id")
-        except Exception as e:
-            print(f"⚠️ Could not fetch coordinator profile: {e}")
 
     if time.time() - last_update_time > 300:
         print("⏰ Timer expired (>5 mins). Checking storage...")
