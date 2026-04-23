@@ -386,6 +386,24 @@ async def verify_image(
     global last_update_time
 
     # 1. Non-blocking Cache Refresh
+    # 1. Default course_unit_id from coordinator profile if not provided
+    if not course_unit_id and supabase_admin:
+        try:
+            prof_resp = supabase_admin.table("profiles") \
+                .select("course_unit_id, institution_id") \
+                .eq("id", user.id).limit(1).execute()
+            if prof_resp.data:
+                prof = prof_resp.data[0]
+                cu = prof.get("course_unit_id")
+                if isinstance(cu, list) and cu:
+                    course_unit_id = cu[0]
+                elif isinstance(cu, str) and cu:
+                    course_unit_id = cu
+                if not institution_id:
+                    institution_id = prof.get("institution_id")
+        except Exception as e:
+            print(f"⚠️ Could not fetch coordinator profile: {e}")
+
     if time.time() - last_update_time > 300:
         print("⏰ Timer expired (>5 mins). Checking storage...")
         background_tasks.add_task(fetch_and_update_encodings) # Run in background so student doesn't wait
@@ -423,7 +441,10 @@ async def verify_image(
 
     status = result.get("status", "failed")
     confidence = result.get("confidence", 0.0)
-    
+    bbox_list = result.get("bbox", [])
+    kps_list = result.get("kps", [])
+    message = result.get("message", "No face detected")
+
     # Offload DB logging to background so student gets response INSTANTLY
     student_id = result.get("student_id", "Unknown") if status == "success" else "Unknown"
     log_status = status if status in ["success", "spoof"] else "failed"
@@ -444,12 +465,11 @@ async def verify_image(
             "name": get_student_name(student_id),
             "confidence": round(confidence, 2),
             "liveness_score": result.get("liveness_score", 1.0),
-            "bbox": result.get("bbox", []),
-            "kps": result.get("kps", []),
+            "bbox": bbox_list,
+            "kps": kps_list,
         }
         
     elif status == "spoof":
-        background_tasks.add_task(log_attendance, "Unknown", 0.0, "spoof", institution_id, course_unit_id)
         return {
             "status":         "spoof",
             "message":        "Spoof detected. Please use your real face.",
@@ -459,7 +479,6 @@ async def verify_image(
             "kps":            kps_list,
         }
     else:
-        background_tasks.add_task(log_attendance, "Unknown", confidence, "failed", institution_id, course_unit_id)
         return {
             "status":     "failed",
             "message":    message,
