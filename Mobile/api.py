@@ -28,6 +28,10 @@ last_update_time = 0
 last_file_version = ""
 _name_cache: dict = {}
 _institution_cache: dict = {}
+FACE_ENGINE_AVAILABLE = True
+FACE_ENGINE_IMPORT_ERROR = ""
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", "5242880"))  # 5 MB
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
 
 # --- 2. SUPABASE ---
 SUPABASE_URL         = os.getenv("SUPABASE_URL")
@@ -52,8 +56,12 @@ if SUPABASE_URL and SUPABASE_SERVICE_KEY:
 # --- 3. ENGINE IMPORT ---
 try:
     from app.face_engine.insightface_engine import verify_face, update_face_bank, preload_models
-except ImportError:
-    print("CRITICAL: Face engine could not load.")
+except ImportError as e:
+    FACE_ENGINE_AVAILABLE = False
+    FACE_ENGINE_IMPORT_ERROR = str(e)
+    print(f"CRITICAL: Face engine could not load: {FACE_ENGINE_IMPORT_ERROR}")
+    def verify_face(*_args, **_kwargs):
+        raise RuntimeError("Face engine unavailable")
     def update_face_bank(data): pass
     def preload_models(): pass
 
@@ -72,6 +80,8 @@ def _bool_flag(value):
 
 async def verify_supabase_token(authorization: str = Header(None)):
     """Verify that the request comes from a valid authenticated Supabase user."""
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Supabase not configured")
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
     token = authorization.replace("Bearer ", "").strip()
@@ -90,6 +100,8 @@ async def check_admin(authorization: str = Header(None)):
     Verify that the user is authenticated and is an admin.
     Accepts: is_admin=True OR is_super_admin=True OR role in ('admin', 'super_admin').
     """
+    if not supabase or not supabase_admin:
+        raise HTTPException(status_code=503, detail="Supabase not configured")
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
     token = authorization.replace("Bearer ", "").strip()
@@ -209,8 +221,8 @@ async def build_encodings_from_storage():
     for institution in known_institutions:
         try:
             student_folders = supabase_admin.storage.from_("raw_faces").list(institution)
-        except:
-            print(f"⚠️ No folder found for {institution}")
+        except Exception as e:
+            print(f"⚠️ No folder found for {institution}: {e}")
             continue
 
         for folder in student_folders:
@@ -219,7 +231,8 @@ async def build_encodings_from_storage():
 
             try:
                 files = supabase_admin.storage.from_("raw_faces").list(folder_path)
-            except:
+            except Exception as e:
+                print(f"⚠️ Could not list files in {folder_path}: {e}")
                 continue
 
             for f in files:
@@ -256,7 +269,8 @@ async def build_encodings_from_storage():
 
         try:
             supabase_admin.storage.from_("raw_faces").remove(["encodings/encodings_insightface.pkl"])
-        except:
+        except Exception as e:
+            print(f"⚠️ Could not refresh local pkl version marker: {e}")
             pass
         supabase_admin.storage.from_("raw_faces").upload(
             "encodings/encodings_insightface.pkl",
@@ -275,8 +289,8 @@ async def build_encodings_from_storage():
                 if f['name'].endswith('.pkl'):
                     last_file_version = f.get('updated_at', '')
                     break
-        except:
-            pass
+        except Exception as e:
+            print(f"⚠️ Could not refresh local pkl version marker: {e}")
         last_update_time = time.time()
 
     else:
@@ -286,6 +300,8 @@ async def build_encodings_from_storage():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 Server Starting...")
+    if not FACE_ENGINE_AVAILABLE:
+        raise RuntimeError(f"Face engine failed to load: {FACE_ENGINE_IMPORT_ERROR}")
     preload_models()
     loaded = await fetch_and_update_encodings()  # smart: skips if pkl unchanged
     if not loaded:
@@ -323,8 +339,8 @@ def get_student_name(student_id: str) -> str:
             _name_cache[student_id]        = resp.data[0].get('name', student_id)
             _institution_cache[student_id] = resp.data[0].get('institution_id')
             return _name_cache[student_id]
-    except:
-        pass
+    except Exception as e:
+        print(f"⚠️ Student lookup failed for {student_id}: {e}")
     return student_id
 
 def get_institution_id(student_id: str) -> str | None:
@@ -384,6 +400,8 @@ async def verify_image(
     user=Depends(verify_supabase_token),
 ):
     global last_update_time
+    if not FACE_ENGINE_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Face engine unavailable")
 
     # 1. Non-blocking Cache Refresh
 
@@ -393,10 +411,17 @@ async def verify_image(
 
     # 2. Fast Image Reading
     try:
+        if file.content_type and file.content_type.lower() not in ALLOWED_IMAGE_TYPES:
+            raise HTTPException(status_code=415, detail="Unsupported file type")
         contents = await file.read()
+        if len(contents) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Image too large")
         nparr    = np.frombuffer(contents, np.uint8)
         img_bgr  = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    except:
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"⚠️ Image decode error: {e}")
         raise HTTPException(status_code=400, detail="Invalid image")
 
     if img_bgr is None:
@@ -495,15 +520,17 @@ async def get_attendance_records(
 @app.get("/admin/attendance_summary")
 async def get_summary(
     institution_id: str = None,
+    limit: int = 5000,
     user=Depends(check_admin),
 ):
     if not supabase_admin:
         raise HTTPException(status_code=503, detail="Supabase not configured")
     try:
-        query         = supabase_admin.table("attendance_records").select("*")
+        safe_limit = max(1, min(limit, 10000))
+        query         = supabase_admin.table("attendance_records").select("student_id, verified")
         if institution_id:
             query = query.eq("institution_id", institution_id)
-        rows          = query.execute().data
+        rows          = query.limit(safe_limit).execute().data
         total_present = sum(1 for r in rows if r.get("verified") == "success")
         total_absent  = sum(1 for r in rows if r.get("verified") == "failed")
         by_student    = {}
