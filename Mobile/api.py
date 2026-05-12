@@ -304,6 +304,8 @@ app.add_middleware(
         "https://www.faceattend.app",
         "http://localhost:3000",
         "http://localhost:8080",
+        "https://api.faceattend.app",
+        "https://mvp.faceattend.app",
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST"],
