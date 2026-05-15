@@ -32,7 +32,7 @@ logger = logging.getLogger("attendance_system")
 
 # TEMPORARY FIX: Set to DEBUG to capture ALL messages for troubleshooting.
 # Change back to logging.INFO once file logging is confirmed working.
-logger.setLevel(logging.DEBUG) 
+logger.setLevel(logging.INFO) 
 
 
 # --- 3. DEFINE HANDLERS ---
