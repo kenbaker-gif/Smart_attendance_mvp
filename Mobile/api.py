@@ -1,12 +1,12 @@
-import asyncio
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends, Header, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends, Header, Form, Request
 import cv2
 import numpy as np
 import os
 import sys
 import pickle
 import time
+import threading
 from pathlib import Path
 from dotenv import load_dotenv
 from supabase import create_client
@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 from collections import defaultdict
 from fastapi.concurrency import run_in_threadpool
+from app.utils.logger import logger
 
 # --- 1. PATH SETUP ---
 current_file = Path(__file__).resolve()
@@ -28,6 +29,11 @@ last_update_time = 0
 last_file_version = ""
 _name_cache: dict = {}
 _institution_cache: dict = {}
+_cache_lock = threading.RLock()  # Thread-safe cache access
+
+# --- CONSTANTS ---
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
+ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 # --- 2. SUPABASE ---
 SUPABASE_URL         = os.getenv("SUPABASE_URL")
@@ -123,19 +129,24 @@ async def check_admin(authorization: str = Header(None)):
 
 # --- 6. PRELOAD STUDENT CACHE ---
 async def preload_student_cache():
+    """Load student names and institutions into memory cache for fast lookups."""
     global _name_cache, _institution_cache
     if not supabase_admin:
         return
     try:
-        _name_cache.clear()
-        _institution_cache.clear()
+        with _cache_lock:
+            _name_cache.clear()
+            _institution_cache.clear()
         resp = supabase_admin.table("students").select("id, name, institution_id").execute()
-        for s in resp.data:
-            _name_cache[s['id']]        = s.get('name', s['id'])
-            _institution_cache[s['id']] = s.get('institution_id')
+        with _cache_lock:
+            for s in resp.data:
+                _name_cache[s['id']]        = s.get('name', s['id'])
+                _institution_cache[s['id']] = s.get('institution_id')
         print(f"✅ Preloaded {len(_name_cache)} students into cache")
+        logger.info(f"Student cache preloaded with {len(_name_cache)} entries")
     except Exception as e:
         print(f"❌ Cache preload failed: {e}")
+        logger.error(f"Cache preload failed: {e}", exc_info=True)
 
 # --- 7. SMART ENCODINGS REFRESH ---
 async def fetch_and_update_encodings():
@@ -201,7 +212,7 @@ async def build_encodings_from_storage():
         print(f"📋 Found institutions: {known_institutions}")
     except Exception as e:
         print(f"⚠️ Could not fetch institutions, falling back: {e}")
-        known_institutions = ["NKU", "MUK"]
+        known_institutions = []  #"NKU", "MUK"
 
     # Collect all embeddings per student (multiple photos)
     student_embeddings: dict = defaultdict(list)
@@ -314,23 +325,28 @@ app.add_middleware(
 
 # --- 10. HELPER FUNCTIONS ---
 def get_student_name(student_id: str) -> str:
-    if student_id in _name_cache:
-        return _name_cache[student_id]
+    """Get student name from cache, with fallback to database lookup."""
+    with _cache_lock:
+        if student_id in _name_cache:
+            return _name_cache[student_id]
     if not supabase_admin:
         return student_id
     try:
         resp = supabase_admin.table("students").select("name, institution_id") \
             .eq("id", student_id).limit(1).execute()
         if resp.data and len(resp.data) > 0:
-            _name_cache[student_id]        = resp.data[0].get('name', student_id)
-            _institution_cache[student_id] = resp.data[0].get('institution_id')
+            with _cache_lock:
+                _name_cache[student_id]        = resp.data[0].get('name', student_id)
+                _institution_cache[student_id] = resp.data[0].get('institution_id')
             return _name_cache[student_id]
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to get student name for {student_id}: {e}")
     return student_id
 
-def get_institution_id(student_id: str) -> str | None:
-    return _institution_cache.get(student_id)
+def get_institution_id(student_id: str) -> Optional[str]:
+    """Get institution ID from cache."""
+    with _cache_lock:
+        return _institution_cache.get(student_id)
 
 def log_attendance(student_id: str, confidence: float, status: str, institution_id: Optional[str] = None, course_unit_id=None):
     if not supabase_admin:
@@ -379,49 +395,90 @@ async def manual_refresh(user=Depends(check_admin)):
 
 @app.post("/verify")
 async def verify_image(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     institution_id: Optional[str] = Form(None),
     course_unit_id: Optional[str] = Form(None),
     user=Depends(verify_supabase_token),
 ):
+    """Verify a student's face from an uploaded image.
+    
+    **Authentication:** Requires valid Supabase JWT token
+    **Args:** file (max 10MB), institution_id (optional), course_unit_id (optional)
+    **Returns:** success/spoof/failed status with confidence and student details
+    """
     global last_update_time
 
-    # 1. Non-blocking Cache Refresh
+    # 1. INPUT VALIDATION
+    try:
+        # Validate file size
+        if file.size and file.size > MAX_UPLOAD_SIZE:
+            logger.warning(f"File upload too large: {file.size} from {request.client.host}")
+            raise HTTPException(status_code=413, detail="File too large (max 10MB)")
+        
+        # Validate MIME type
+        if (file.content_type or "") not in ALLOWED_MIME_TYPES:
+            logger.warning(f"Invalid MIME: {file.content_type} from {request.client.host}")
+            raise HTTPException(status_code=400, detail="Only JPEG, PNG, WebP allowed")
+        
+        # Validate institution_id if provided
+        if institution_id and supabase_admin:
+            try:
+                resp = supabase_admin.table("institutions").select("id").eq("id", institution_id).limit(1).execute()
+                if not resp.data:
+                    raise HTTPException(status_code=400, detail="Invalid institution_id")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.debug(f"Institution validation non-critical: {e}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Validation error: {e}")
+        raise HTTPException(status_code=400, detail="Invalid request")
+
+    # 2. Non-blocking Cache Refresh
 
     if time.time() - last_update_time > 300:
         print("⏰ Timer expired (>5 mins). Checking storage...")
         background_tasks.add_task(fetch_and_update_encodings) # Run in background so student doesn't wait
 
-    # 2. Fast Image Reading
+    # 3. Fast Image Reading
     try:
         contents = await file.read()
         nparr    = np.frombuffer(contents, np.uint8)
         img_bgr  = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    except:
+    except Exception as e:
+        logger.error(f"Image read error: {e}")
         raise HTTPException(status_code=400, detail="Invalid image")
 
     if img_bgr is None:
+        logger.warning(f"Could not decode image from {request.client.host}")
         raise HTTPException(status_code=400, detail="Could not decode image")
 
-    # 🚀 OPTIMIZATION: Resize image to 640px width if it's too large
+    # 4. OPTIMIZATION: Resize image to 640px width if it's too large
     # This reduces CPU load by up to 70% for high-res mobile photos
     h, w = img_bgr.shape[:2]
     if w > 640:
         scaling = 640 / w
         img_bgr = cv2.resize(img_bgr, (640, int(h * scaling)))
 
-    # 🧠 OPTIMIZATION: Use run_in_threadpool
+    # 5. OPTIMIZATION: Use run_in_threadpool
     # This offloads the heavy InsightFace math to a separate thread
     # Allowing your 8vCPUs to handle multiple students at once
     try:
         result = await run_in_threadpool(verify_face, img_bgr)
+    except MemoryError:
+        logger.error("Server out of memory during face verification")
+        raise HTTPException(status_code=503, detail="Server resource exhausted")
     except Exception as e:
-        print(f"Engine Error: {e}")
-        return {"status": "error", "message": "Processing Error"}
+        logger.error(f"Face verification engine error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Face verification failed")
 
-    # --- LOGGING & RESPONSE LOGIC ---
+    # 6. LOGGING & RESPONSE LOGIC
     if not result:
+        logger.info(f"No face detected from {request.client.host}")
         return {"status": "failed", "message": "No face detected"}
 
     status = result.get("status", "failed")
@@ -444,30 +501,33 @@ async def verify_image(
     )
 
     if status == "success":
+        logger.info(f"Face verification success for {student_id}")
         return {
             "status": "success",
             "student_id": student_id,
             "name": get_student_name(student_id),
-            "confidence": round(confidence, 2),
-            "liveness_score": result.get("liveness_score", 1.0),
+            "confidence": round(float(np.clip(confidence, 0.0, 1.0)), 2),
+            "liveness_score": round(float(result.get("liveness_score", 1.0)), 3),
             "bbox": bbox_list,
             "kps": kps_list,
         }
         
     elif status == "spoof":
+        logger.warning(f"Spoof detected from {request.client.host}")
         return {
             "status":         "spoof",
             "message":        "Spoof detected. Please use your real face.",
-            "liveness_score": result.get("liveness_score", 0.0),
+            "liveness_score": round(float(result.get("liveness_score", 0.0)), 3),
             "confidence":     0.0,
             "bbox":           bbox_list,
             "kps":            kps_list,
         }
     else:
+        logger.info(f"Face verification failed: {message}")
         return {
             "status":     "failed",
             "message":    message,
-            "confidence": round(confidence, 2),
+            "confidence": round(float(np.clip(confidence, 0.0, 1.0)), 2),
             "bbox":       bbox_list,
             "kps":        kps_list,
         }

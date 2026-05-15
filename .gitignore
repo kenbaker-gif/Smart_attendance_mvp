@@ -1,61 +1,247 @@
-# --------------------
-# Global data
-# --------------------
-data/
+# ============================================================================
+# Smart Attendance MVP - .gitignore Configuration
+# ============================================================================
+# This file specifies which files should NOT be committed to git
+# Organized by category for easy maintenance
 
-# --------------------
-# Images
-# --------------------
+# ============================================================================
+# 1. ENVIRONMENT & SECRETS (CRITICAL - NEVER COMMIT)
+# ============================================================================
+.env
+.env.local
+.env.*.local
+secrets.env
+secrets.*.env
+*.key
+*.pem
+.credentials
+
+# ============================================================================
+# 2. PYTHON ENVIRONMENT & CACHES
+# ============================================================================
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ============================================================================
+# 3. PYTHON TESTING & COVERAGE
+# ============================================================================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.hypothesis/
+*.cover
+
+# ============================================================================
+# 4. PYTHON LINTING & TYPE CHECKING
+# ============================================================================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pylint.d/
+
+# ============================================================================
+# 5. IDE & EDITOR FILES
+# ============================================================================
+# VSCode
+.vscode/
+*.code-workspace
+.history/
+
+# PyCharm / JetBrains
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+.vim/
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# VS (older)
+*.user
+*.suo
+*.sln.docstates
+
+# ============================================================================
+# 6. OS & SYSTEM FILES
+# ============================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+.directory
+.trash-*
+
+# ============================================================================
+# 7. DATABASE FILES (Local development only)
+# ============================================================================
+*.db
+*.sqlite
+*.sqlite3
+*.sqlitebak
+
+# ============================================================================
+# 8. LARGE DATA & MODEL FILES
+# ============================================================================
+# Face recognition models (InsightFace)
+*.pkl
+*.pickle
+*.bin
+*.onnx
+*.pth
+*.h5
+*.pt
+*.model
+
+# Face image databases (raw)
+data/
+raw_faces/
+encodings/
+app/streamlit/data/encodings/
+app/streamlit/data/raw_faces/
+
+# Uploaded images
+uploads/
+temp/
+tmp/
+
+# ============================================================================
+# 9. LOGS & DEBUG FILES
+# ============================================================================
+logs/
+log/
+*.log
+debug/
+debug2/
+
+# ============================================================================
+# 10. IMAGE FILES (Development/test images)
+# ============================================================================
 *.jpg
 *.jpeg
 *.png
+*.gif
+*.bmp
+*.webp
 
-# --------------------
-# Debug & logs
-# --------------------
-debug/
-debug2/
-logs/
+# ============================================================================
+# 11. DOCKER & DEPLOYMENT
+# ============================================================================
+# Docker files (but keep Dockerfile for production)
+docker-compose.override.yml
+.dockerignore
+*.dockerfile.bak
 
-# --------------------
-# Streamlit
-# --------------------
-streamlit/*
-!streamlit/main.py
+# Docker volumes
+docker_volumes/
 
-streamlit/data/
-streamlit/logs/
-streamlit/.streamlit/
-streamlit/__pycache__/
-streamlit/*.pyc
+# ============================================================================
+# 12. NPM / FRONTEND (if applicable)
+# ============================================================================
+node_modules/
+npm-debug.log
+yarn-error.log
+package-lock.json
 
-# --------------------
-# Tests
-# --------------------
-*.test.py
+# ============================================================================
+# 13. TEMPORARY & BACKUP FILES
+# ============================================================================
+*.tmp
+*.bak
+*.backup
+*.swp
+*.orig
+*.rej
+*.patch
 
-# --------------------
-# Environment secrets
-# --------------------
-.env
-secrets.env
+# ============================================================================
+# 14. JUPYTER NOTEBOOKS & RESEARCH
+# ============================================================================
+.ipynb_checkpoints/
+*.ipynb
+research/
+notebooks/
 
-# --------------------
-# Python cache
-# --------------------
-**/__pycache__/
-**/*.pyc
+# ============================================================================
+# 15. DOCUMENTATION BUILDS
+# ============================================================================
+docs/_build/
+site/
 
-# --------------------
-# OS junk
-# --------------------
-.DS_Store
-Thumbs.db
-
+# ============================================================================
+# 16. MISCELLANEOUS PROJECT-SPECIFIC
+# ============================================================================
+# Test files created by user
+test.jpg
+stress_test.py
 Dockerfile.fix
 
-supabase
+# Temporary scripts
+apply_improvements.py
+test_compilation.py
 
-stress_test.py
+# Supabase local development
+supabase/
+.supabase/
 
-test.jpg
+# Railway configuration
+railway.toml.local
+
+# ============================================================================
+# EXCEPTIONS: Files to ALWAYS commit (even if matching above patterns)
+# ============================================================================
+!.gitkeep
+!Dockerfile
+!requirements.txt
+!.env.example
+!.env.template
