@@ -33,7 +33,7 @@ _cache_lock = threading.RLock()  # Thread-safe cache access
 
 # --- CONSTANTS ---
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
-ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "application/octet-stream"}
 
 # --- 2. SUPABASE ---
 SUPABASE_URL         = os.getenv("SUPABASE_URL")
