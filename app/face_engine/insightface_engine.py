@@ -12,8 +12,6 @@ import time
 # -----------------------------
 CURRENT_FILE = Path(__file__).resolve()
 APP_DIR = CURRENT_FILE.parent.parent
-DATA_DIR = APP_DIR / "streamlit" / "data"
-ENCODINGS_PATH = DATA_DIR / "encodings/encodings_insightface.pkl"
 DEFAULT_THRESHOLD = 0.5
 LIVENESS_THRESHOLD = 0.6  # Above this = live, below = spoof
 
@@ -22,6 +20,7 @@ LIVENESS_THRESHOLD = 0.6  # Above this = live, below = spoof
 # -----------------------------
 _app = None
 _antispoof = None
+_antispoof_loaded = False
 _CACHE_ENCODINGS = np.array([])
 _CACHE_IDS = []
 
@@ -84,26 +83,26 @@ def get_insightface(det_size=(320, 320), model_name="buffalo_s"):
 
 def get_antispoof():
     """Load MiniFASNetV2 anti-spoofing model via uniface."""
-    global _antispoof
+    global _antispoof, _antispoof_loaded
 
-    # Fast path: model already loaded.
-    if _antispoof is not None:
+    # Fast path: already attempted (success or failure), don't retry.
+    if _antispoof_loaded:
         return _antispoof
 
-    # Slow path: same double-checked locking pattern as get_insightface().
-    # Prevents two threads from both calling create_spoofer() simultaneously.
+    # Slow path: first load attempt. Lock so only one thread runs create_spoofer().
     with _model_lock:
-        if _antispoof is not None:
+        if _antispoof_loaded:
             return _antispoof
 
         try:
             from uniface import create_spoofer
-            _antispoof = create_spoofer()  # downloads MiniFASNetV2 automatically
+            _antispoof = create_spoofer()
             print("✅ Anti-spoof model loaded.")
         except Exception as e:
             print(f"⚠️ Anti-spoof model failed to load: {e}. Liveness check disabled.")
-            # Set to a sentinel so we don't retry on every request
             _antispoof = None
+        finally:
+            _antispoof_loaded = True  # Never retry regardless of outcome
 
     return _antispoof
 
