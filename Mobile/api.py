@@ -348,7 +348,7 @@ def get_institution_id(student_id: str) -> Optional[str]:
     with _cache_lock:
         return _institution_cache.get(student_id)
 
-def log_attendance(student_id: str, confidence: float, status: str, institution_id: Optional[str] = None, course_unit_id=None):
+def log_attendance(student_id: str, confidence: float, status: str, institution_id: Optional[str] = None, course_unit_id=None, session_id=None):
     if not supabase_admin:
         return
     if status == "success":
@@ -370,6 +370,7 @@ def log_attendance(student_id: str, confidence: float, status: str, institution_
         "verified":         status,
         "institution_id":   institution_id,
         "course_unit_id":   course_unit_id,
+        "session_id":       session_id,
     }
     try:
         supabase_admin.table('attendance_records').insert(data).execute()
@@ -400,6 +401,7 @@ async def verify_image(
     file: UploadFile = File(...),
     institution_id: Optional[str] = Form(None),
     course_unit_id: Optional[str] = Form(None),
+    session_id: Optional[str] = Form(None),
     user=Depends(verify_supabase_token),
 ):
     """Verify a student's face from an uploaded image.
@@ -492,12 +494,13 @@ async def verify_image(
     log_status = status if status in ["success", "spoof"] else "failed"
     
     background_tasks.add_task(
-        log_attendance, 
-        student_id, 
-        confidence, 
-        log_status, 
-        institution_id, 
-        course_unit_id
+        log_attendance,
+        student_id,
+        confidence,
+        log_status,
+        institution_id,
+        course_unit_id,
+        session_id
     )
 
     if status == "success":
